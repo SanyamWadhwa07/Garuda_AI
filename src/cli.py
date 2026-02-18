@@ -152,27 +152,44 @@ def setup(password: Optional[str], no_password: bool, port: int):
     if ollama.is_installed():
         click.echo("✓ Ollama already installed")
     else:
-        click.echo("  Installing Ollama...")
-        if ollama.install(progress):
-            click.echo("✓ Ollama installed")
+        click.echo("  Note: Ollama needs to be installed to run models.")
+        try_install = click.confirm("  Attempt to download and install Ollama?", default=True)
+        
+        if try_install:
+            click.echo("  Installing Ollama...")
+            if ollama.install(progress):
+                click.echo("✓ Ollama installed")
+            else:
+                click.echo(style("⚠️ Ollama installation failed", fg="yellow"))
+                click.echo("   You can install Ollama manually from: https://ollama.ai")
+                click.echo("   Then restart this setup.")
         else:
-            click.echo(style("✗ Ollama installation failed", fg="red"), err=True)
-            return
+            click.echo("  Skipping Ollama installation.")
+            click.echo("  To use GarudaAI, please install Ollama manually.")
 
     # Start Ollama
-    click.echo("  Starting Ollama server...")
-    if ollama.start(progress):
-        click.echo("✓ Ollama running")
+    click.echo("  Checking for Ollama server...")
+    if not ollama.is_running():
+        click.echo("  Ollama not running. Attempting to start...")
+        if ollama.start(progress):
+            click.echo("✓ Ollama server running")
+        else:
+            click.echo(style("⚠️ Could not start Ollama", fg="yellow"))
+            click.echo("   Run 'ollama serve' in another terminal to start it manually")
     else:
-        click.echo(style("✗ Failed to start Ollama", fg="red"), err=True)
-        return
+        click.echo("✓ Ollama server already running")
 
-    # Pull model
-    click.echo(f"  Pulling recommended model ({suggestion['primary_model']})...")
-    if ollama.pull_model(suggestion['primary_model_url'], progress):
-        click.echo("✓ Model ready")
+    # Pull model (if Ollama is available)
+    if ollama.is_running():
+        click.echo(f"  Pulling recommended model ({suggestion['primary_model']})...")
+        if ollama.pull_model(suggestion['primary_model_url'], progress):
+            click.echo("✓ Model ready")
+        else:
+            click.echo(style("⚠️ Failed to pull model", fg="yellow"))
+            click.echo(f"   You can pull it manually with: ollama pull {suggestion['primary_model_url']}")
     else:
-        click.echo(style("✗ Failed to pull model", fg="yellow"), err=True)
+        click.echo(style("ℹ️ Model will be downloaded when you start the server", fg="cyan"))
+        click.echo(f"   Once Ollama is running, pull with: ollama pull {suggestion['primary_model_url']}")
 
     click.echo()
 

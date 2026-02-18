@@ -17,7 +17,8 @@ from urllib.error import URLError
 class OllamaManager:
     """Manage Ollama installation and lifecycle."""
 
-    OLLAMA_URL = "https://github.com/ollama/ollama/releases/download/v0.1.29/ollama-linux-x86_64.tgz"
+    # Latest Ollama release - update this as new versions come out
+    OLLAMA_URL = "https://github.com/ollama/ollama/releases/download/v0.3.0/ollama-linux-x86_64.tar.gz"
     OLLAMA_PORT = 11434
 
     def __init__(self, install_dir: str = "~/.local/share/garudaai/ollama"):
@@ -87,9 +88,7 @@ class OllamaManager:
 
         # Download
         try:
-            tar_path = self.install_dir / "ollama.tgz"
-            urlopen(self.OLLAMA_URL)
-            # Stream download with progress
+            tar_path = self.install_dir / "ollama.tar.gz"
             with urlopen(self.OLLAMA_URL) as response:
                 with open(tar_path, 'wb') as out:
                     total = int(response.headers.get('content-length', 0))
@@ -106,12 +105,14 @@ class OllamaManager:
         except URLError as e:
             if progress_callback:
                 progress_callback(f"Download failed: {e}")
+                progress_callback(f"Tip: Check your internet connection or try installing Ollama manually from https://ollama.ai")
             return False
 
         # Extract
         if progress_callback:
             progress_callback("Extracting Ollama...")
         try:
+            # Try tar for .tar.gz or .tgz files
             subprocess.run(
                 ["tar", "-xzf", str(tar_path), "-C", str(self.install_dir)],
                 check=True,
