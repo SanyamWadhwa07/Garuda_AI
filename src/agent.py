@@ -329,10 +329,9 @@ Always explain what you're doing before calling tools. Be concise and helpful.""
 
         # Call Ollama with streaming
         try:
-            async_response = await self._call_ollama_streaming(model_name, messages)
             full_response = ""
 
-            async for token in async_response:
+            async for token in self._call_ollama_streaming(model_name, messages):
                 yield token
                 full_response += token
 
