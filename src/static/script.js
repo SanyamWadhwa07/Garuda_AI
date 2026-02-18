@@ -285,6 +285,7 @@ async function streamChatResponse(message, loadingId) {
                     model: currentModel,
                     message: message,
                     session_id: currentSessionId,
+                    use_case: localStorage.getItem('useCase') || 'general',
                 }));
             };
             
@@ -387,10 +388,95 @@ function addSystemMessage(text) {
 /**
  * Create new session
  */
-function createNewSession() {
-    currentSessionId = 'session-' + Date.now();
+async function createNewSession() {
+    try {
+        const response = await fetch('/api/sessions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model_name: currentModel || 'neural-chat'})
+        });
+        const data = await response.json();
+        currentSessionId = data.session_id;
+    } catch (error) {
+        currentSessionId = 'session-' + Date.now();
+    }
     app.messages.innerHTML = '';
-    addSystemMessage(`Using model: ${currentModel || 'default'}`);
+    addSystemMessage(`New session started`);
+}
+
+/**
+ * Load session history
+ */
+async function loadSessionHistory() {
+    try {
+        const response = await fetch('/api/sessions');
+        const data = await response.json();
+        const sessions = data.sessions || [];
+        
+        const tabContent = document.querySelector('[data-tab="history"]');
+        if (!tabContent) return;
+        
+        tabContent.innerHTML = '';
+        
+        if (sessions.length === 0) {
+            tabContent.innerHTML = '<div style="padding: 20px; color: #999;">No session history yet</div>';
+            return;
+        }
+        
+        const list = document.createElement('div');
+        sessions.forEach(session => {
+            const div = document.createElement('div');
+            div.className = 'history-item';
+            div.style.padding = '12px';
+            div.style.borderBottom = '1px solid #333';
+            div.style.cursor = 'pointer';
+            div.style.transition = 'background-color 0.2s';
+            
+            const date = new Date(session.last_accessed).toLocaleString();
+            const summary = session.summary || `${session.model_name}`;
+            
+            div.innerHTML = `
+                <strong>${summary}</strong>
+                <br><small style="color: #999; font-size: 0.85em;">${date}</small>
+            `;
+            
+            div.addEventListener('click', () => loadSession(session.session_id));
+            div.addEventListener('mouseenter', () => div.style.backgroundColor = '#333');
+            div.addEventListener('mouseleave', () => div.style.backgroundColor = 'transparent');
+            list.appendChild(div);
+        });
+        
+        tabContent.appendChild(list);
+    } catch (error) {
+        console.error('Failed to load history:', error);
+    }
+}
+
+/**
+ * Load and resume a session
+ */
+async function loadSession(sessionId) {
+    try {
+        const response = await fetch(`/api/sessions/${sessionId}`);
+        const data = await response.json();
+        
+        currentSessionId = sessionId;
+        currentModel = data.session.model_name;
+        if (app.modelSelector) app.modelSelector.value = currentModel;
+        app.messages.innerHTML = '';
+        
+        data.messages.forEach(msg => {
+            if (msg.role === 'user') {
+                addUserMessage(msg.content);
+            } else {
+                addAssistantMessage(msg.content);
+            }
+        });
+        
+        switchTab('chat');
+    } catch (error) {
+        console.error('Failed to load session:', error);
+    }
 }
 
 /**

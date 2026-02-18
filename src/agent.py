@@ -148,6 +148,43 @@ class SessionManager:
 
         return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
+    def list_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """List all sessions."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT session_id, model_name, created_at, last_accessed, summary FROM sessions ORDER BY last_accessed DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_session_info(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get session information."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT session_id, model_name, created_at, last_accessed, summary FROM sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def update_session_summary(self, session_id: str, summary: str):
+        """Update session summary."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE sessions SET summary = ? WHERE session_id = ?",
+            (summary, session_id),
+        )
+        conn.commit()
+        conn.close()
+
     def log_audit(self, session_id: str, tool_name: str, action: str, params: Dict, result: str):
         """Log an audit entry.
         
@@ -193,11 +230,73 @@ class Agent:
         self.shell = ShellTool()
         self.home_dir = home_dir
 
+    def build_system_prompt(self, model_name: str, use_case: str = "general") -> str:
+        """Build contextual system prompt based on use case."""
+        base = """You are GarudaAI, a helpful, knowledgeable local AI assistant running on Garuda Linux.
+You have access to system tools and can read/write files or execute safe commands.
+
+When you need to use a tool, format it on a separate line as:
+[tool: filesystem_read, /path/to/file]
+[tool: shell, ls, -la, /home]
+
+Always explain what you're doing before calling tools. Be concise and helpful."""
+
+        use_cases = {
+            "coding": base + "\n\nYou are an expert programmer. Help with code, debugging, and technical problems. Provide code examples and clear explanations.",
+            "research": base + "\n\nYou are a research assistant. Help find, analyze, and summarize information. Use tools to read documents and files.",
+            "writing": base + "\n\nYou are a writing assistant. Help with drafting, editing, and improving text.",
+            "general": base,
+        }
+        return use_cases.get(use_case, base)
+
+    def parse_tool_calls(self, text: str) -> List[Dict[str, Any]]:
+        """Parse tool calls from response text. Format: [tool: name, arg1, arg2]"""
+        import re
+        tool_calls = []
+        pattern = r'\[tool:\s*(\w+)(?:,\s*(.+?))?\]'
+        matches = re.finditer(pattern, text)
+        
+        for match in matches:
+            tool_name = match.group(1)
+            args_str = match.group(2)
+            args = [arg.strip() for arg in args_str.split(',')] if args_str else []
+            tool_calls.append({"tool": tool_name, "args": args})
+        
+        return tool_calls
+
+    async def execute_tool(self, tool_name: str, args: List[str]) -> str:
+        """Execute a tool and return result."""
+        try:
+            if tool_name == "filesystem_read":
+                if not args:
+                    return "Error: filesystem_read requires a path"
+                result = self.filesystem.read_file(args[0])
+                if not result.get("success"):
+                    return f"Error: {result.get('error', 'Failed to read file')}"
+                return f"File contents ({result.get('bytes_read', 0)} bytes):\n{result['content']}"
+            
+            elif tool_name == "shell":
+                if not args:
+                    return "Error: shell requires a command"
+                cmd = args[0]
+                cmd_args = args[1:] if len(args) > 1 else []
+                result = self.shell.execute(cmd, *cmd_args)
+                if not result.get("success"):
+                    return f"Error: {result.get('error', 'Command failed')}"
+                return f"Command output:\n{result['output']}"
+            
+            else:
+                return f"Error: Unknown tool '{tool_name}'"
+        
+        except Exception as e:
+            return f"Error executing {tool_name}: {str(e)}"
+
     async def stream_chat(
         self,
         model_name: str,
         user_message: str,
         session_id: Optional[str] = None,
+        use_case: str = "general",
     ) -> AsyncGenerator[str, None]:
         """Stream a chat response from Ollama.
         
@@ -205,6 +304,7 @@ class Agent:
             model_name: Model name to use
             user_message: User's message
             session_id: Optional session ID for history
+            use_case: Use case for context-aware prompts
             
         Yields:
             Text tokens as they arrive
@@ -216,11 +316,11 @@ class Agent:
         # Add user message to history
         self.session_manager.add_message(session_id, "user", user_message)
 
-        # Get context (last 5 messages)
-        history = self.session_manager.get_history(session_id, limit=5)
+        # Get context (last 10 messages for more context)
+        history = self.session_manager.get_history(session_id, limit=10)
 
-        # Build system prompt
-        system_prompt = "You are a helpful AI assistant with access to local tools like filesystem access and command execution. Be concise and helpful."
+        # Build contextual system prompt
+        system_prompt = self.build_system_prompt(model_name, use_case)
 
         # Build messages for Ollama
         messages = [{"role": "system", "content": system_prompt}]
@@ -236,11 +336,29 @@ class Agent:
                 yield token
                 full_response += token
 
+            # Parse and execute tools if present
+            tool_calls = self.parse_tool_calls(full_response)
+            if tool_calls:
+                yield "\n\n_Executing tools..._\n"
+                for call in tool_calls:
+                    result = await self.execute_tool(call["tool"], call["args"])
+                    yield f"\n**{call['tool']}**: {result}\n"
+                    
+                    # Log audit
+                    self.session_manager.log_audit(
+                        session_id,
+                        call["tool"],
+                        f"execute {call['tool']}",
+                        {"args": call["args"]},
+                        result[:100]
+                    )
+
             # Add assistant response to history
             self.session_manager.add_message(session_id, "assistant", full_response)
 
         except Exception as e:
-            yield f"\n\nError: {str(e)}"
+            error_msg = f"\n\nError: {str(e)}"
+            yield error_msg
 
     async def _call_ollama_streaming(
         self,
@@ -329,6 +447,38 @@ async def list_models():
     return {"models": agent.list_models()}
 
 
+@app.get("/api/sessions")
+async def list_sessions():
+    """List all sessions."""
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    sessions = agent.session_manager.list_sessions()
+    return {"sessions": sessions}
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    """Get session info and messages."""
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    
+    session_info = agent.session_manager.get_session_info(session_id)
+    if not session_info:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    messages = agent.session_manager.get_history(session_id, limit=100)
+    return {"session": session_info, "messages": messages}
+
+
+@app.post("/api/sessions")
+async def create_session(model_name: str = "neural-chat"):
+    """Create a new session."""
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    session_id = agent.session_manager.create_session(model_name)
+    return {"session_id": session_id}
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
     """WebSocket endpoint for streaming chat."""
@@ -343,9 +493,10 @@ async def websocket_chat(websocket: WebSocket):
         model_name = data.get("model", "neural-chat")
         user_message = data.get("message", "")
         session_id = data.get("session_id")
+        use_case = data.get("use_case", "general")
 
         # Stream response
-        async for token in agent.stream_chat(model_name, user_message, session_id):
+        async for token in agent.stream_chat(model_name, user_message, session_id, use_case):
             await websocket.send_text(token)
 
         await websocket.send_json({"type": "done"})
