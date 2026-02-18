@@ -72,14 +72,30 @@ async function loadModels() {
             return;
         }
         
+        const parseModelSize = (name) => {
+            if (!name) return Number.POSITIVE_INFINITY;
+            const match = String(name).match(/(\d+(?:\.\d+)?)\s*b/i);
+            return match ? parseFloat(match[1]) : Number.POSITIVE_INFINITY;
+        };
+
         models.forEach(model => {
             const option = document.createElement('option');
             option.value = model.name;
             option.textContent = model.name;
             app.modelSelector.appendChild(option);
         });
-        
-        currentModel = models[0].name;
+
+        let smallest = models[0];
+        let smallestSize = parseModelSize(models[0].name);
+        models.slice(1).forEach(model => {
+            const size = parseModelSize(model.name);
+            if (size < smallestSize) {
+                smallest = model;
+                smallestSize = size;
+            }
+        });
+
+        currentModel = (smallest && smallest.name) ? smallest.name : models[0].name;
         app.modelSelector.value = currentModel;
         
     } catch (error) {
@@ -273,6 +289,37 @@ async function sendMessage() {
 async function streamChatResponse(message, loadingId) {
     return new Promise((resolve, reject) => {
         try {
+            let pendingText = '';
+            let flushTimer = null;
+            let resolved = false;
+            const flushIntervalMs = 50;
+
+            const flushPending = () => {
+                if (!pendingText) {
+                    flushTimer = null;
+                    return;
+                }
+                updateMessage(loadingId, pendingText, true);
+                pendingText = '';
+                flushTimer = null;
+            };
+
+            const scheduleFlush = () => {
+                if (flushTimer) return;
+                flushTimer = setTimeout(flushPending, flushIntervalMs);
+            };
+
+            const finalize = () => {
+                if (resolved) return;
+                resolved = true;
+                if (flushTimer) {
+                    clearTimeout(flushTimer);
+                    flushTimer = null;
+                }
+                flushPending();
+                resolve();
+            };
+
             // Determine WebSocket protocol
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws/chat`;
@@ -293,7 +340,7 @@ async function streamChatResponse(message, loadingId) {
                 try {
                     if (event.data === '{"type":"done"}' || event.data.includes('"type":"done"')) {
                         ws.close();
-                        resolve();
+                        finalize();
                     } else {
                         // Parse JSON or treat as plain text
                         let text = event.data;
@@ -303,14 +350,15 @@ async function streamChatResponse(message, loadingId) {
                                 text = `Error: ${json.message}`;
                             } else if (json.type === 'done') {
                                 ws.close();
-                                resolve();
+                                finalize();
                                 return;
                             }
                         } catch (e) {
                             // Not JSON, treat as plain text token
                         }
-                        
-                        updateMessage(loadingId, text, true);
+
+                        pendingText += text;
+                        scheduleFlush();
                     }
                 } catch (error) {
                     console.error('Message parse error:', error);
@@ -323,7 +371,7 @@ async function streamChatResponse(message, loadingId) {
             };
             
             ws.onclose = () => {
-                resolve();
+                finalize();
             };
             
         } catch (error) {

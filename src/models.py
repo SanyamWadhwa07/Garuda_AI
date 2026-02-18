@@ -113,6 +113,7 @@ class ModelSuggester:
         cpu_cores: int,
         ram_mb: int,
         use_case: Optional[str] = None,
+        prefer_smaller: bool = False,
     ) -> Dict[str, Any]:
         """Suggest models based on hardware and use case.
         
@@ -143,8 +144,11 @@ class ModelSuggester:
         else:
             selected_models = fitting_models
 
-        # Sort by parameter count (prefer larger, more capable models that fit)
-        selected_models.sort(key=lambda m: m.parameters_billion, reverse=True)
+        # Sort by parameter count (prefer smaller for speed or larger for quality)
+        selected_models.sort(
+            key=lambda m: m.parameters_billion,
+            reverse=not prefer_smaller,
+        )
 
         if not selected_models:
             primary = fitting_models[0]
@@ -153,7 +157,13 @@ class ModelSuggester:
         else:
             primary = selected_models[0]
             alternatives = selected_models[1:3]
-            reason = f"Recommended for your {vram_mb}MB VRAM. {primary.description}"
+            if prefer_smaller:
+                reason = (
+                    f"Recommended for speed on your {vram_mb}MB VRAM. "
+                    f"{primary.description}"
+                )
+            else:
+                reason = f"Recommended for your {vram_mb}MB VRAM. {primary.description}"
 
         return {
             "primary_model": primary.name,

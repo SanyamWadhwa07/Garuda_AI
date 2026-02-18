@@ -18,6 +18,8 @@ password_hash = ""
 default_model = "neural-chat"
 # Ollama API endpoint
 ollama_url = "http://localhost:11434"
+# Prefer smaller/faster models when recommending
+prefer_smaller = true
 
 [paths]
 # Home directory (default: $HOME)

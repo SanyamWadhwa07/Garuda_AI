@@ -86,8 +86,9 @@ def detect(output_json: bool):
 
 @cli.command()
 @click.option("--use-case", type=click.Choice(["chat", "coding", "reasoning", "vision"]), help="Filter by use case")
+@click.option("--prefer-smaller/--prefer-larger", default=True, help="Prefer smaller/faster models when recommending")
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")
-def suggest(use_case: Optional[str], output_json: bool):
+def suggest(use_case: Optional[str], prefer_smaller: bool, output_json: bool):
     """Suggest models based on hardware."""
     click.echo(style("Detecting hardware and analyzing models...", fg="cyan"))
 
@@ -100,6 +101,7 @@ def suggest(use_case: Optional[str], output_json: bool):
         cpu_cores=hardware.get("cpu_cores", 4),
         ram_mb=hardware.get("ram_mb", 8192),
         use_case=use_case,
+        prefer_smaller=prefer_smaller,
     )
 
     if output_json:
@@ -121,7 +123,8 @@ def suggest(use_case: Optional[str], output_json: bool):
 @click.option("--password", prompt=False, hide_input=True, help="Set password (prompted if not provided)")
 @click.option("--no-password", is_flag=True, help="Disable password protection (not recommended)")
 @click.option("--port", type=int, default=8000, help="Port for web interface (default: 8000)")
-def setup(password: Optional[str], no_password: bool, port: int):
+@click.option("--prefer-smaller/--prefer-larger", default=True, help="Prefer smaller/faster models when recommending")
+def setup(password: Optional[str], no_password: bool, port: int, prefer_smaller: bool):
     """Set up GarudaAI for first run."""
     click.echo(style("Welcome to GarudaAI Setup", fg="cyan", bold=True))
     click.echo()
@@ -137,7 +140,12 @@ def setup(password: Optional[str], no_password: bool, port: int):
     # Model suggestion
     click.echo(style("Step 2: Recommending models...", fg="cyan"))
     suggester = ModelSuggester()
-    suggestion = suggester.suggest(vram_mb, cpu_cores=hardware.get("cpu_cores", 4), ram_mb=hardware.get("ram_mb", 8192))
+    suggestion = suggester.suggest(
+        vram_mb,
+        cpu_cores=hardware.get("cpu_cores", 4),
+        ram_mb=hardware.get("ram_mb", 8192),
+        prefer_smaller=prefer_smaller,
+    )
     
     click.echo(f"✓ Recommended model: {style(suggestion['primary_model'], fg='green')}")
     click.echo()
@@ -224,6 +232,7 @@ def setup(password: Optional[str], no_password: bool, port: int):
         "models": {
             "default_model": suggestion["primary_model"],
             "ollama_url": "http://localhost:11434",
+            "prefer_smaller": prefer_smaller,
         },
         "paths": {
             "home_dir": "~",

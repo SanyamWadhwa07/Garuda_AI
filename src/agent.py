@@ -7,12 +7,15 @@ import asyncio
 import json
 import sqlite3
 import logging
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from urllib.request import urlopen
 from urllib.error import URLError
+
+import httpx
 
 from fastapi import FastAPI, WebSocket, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
@@ -207,6 +210,27 @@ class SessionManager:
         conn.commit()
         conn.close()
 
+    async def create_session_async(self, model_name: str) -> str:
+        return await asyncio.to_thread(self.create_session, model_name)
+
+    async def add_message_async(self, session_id: str, role: str, content: str):
+        await asyncio.to_thread(self.add_message, session_id, role, content)
+
+    async def get_history_async(self, session_id: str, limit: int = 50) -> List[Dict[str, str]]:
+        return await asyncio.to_thread(self.get_history, session_id, limit)
+
+    async def list_sessions_async(self, limit: int = 20) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.list_sessions, limit)
+
+    async def get_session_info_async(self, session_id: str) -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(self.get_session_info, session_id)
+
+    async def update_session_summary_async(self, session_id: str, summary: str):
+        await asyncio.to_thread(self.update_session_summary, session_id, summary)
+
+    async def log_audit_async(self, session_id: str, tool_name: str, action: str, params: Dict, result: str):
+        await asyncio.to_thread(self.log_audit, session_id, tool_name, action, params, result)
+
 
 class Agent:
     """Local AI agent with tool integration."""
@@ -311,13 +335,13 @@ Always explain what you're doing before calling tools. Be concise and helpful.""
         """
         # Create session if needed
         if not session_id:
-            session_id = self.session_manager.create_session(model_name)
+            session_id = await self.session_manager.create_session_async(model_name)
 
         # Add user message to history
-        self.session_manager.add_message(session_id, "user", user_message)
+        await self.session_manager.add_message_async(session_id, "user", user_message)
 
         # Get context (last 10 messages for more context)
-        history = self.session_manager.get_history(session_id, limit=10)
+        history = await self.session_manager.get_history_async(session_id, limit=10)
 
         # Build contextual system prompt
         system_prompt = self.build_system_prompt(model_name, use_case)
@@ -344,16 +368,16 @@ Always explain what you're doing before calling tools. Be concise and helpful.""
                     yield f"\n**{call['tool']}**: {result}\n"
                     
                     # Log audit
-                    self.session_manager.log_audit(
+                    await self.session_manager.log_audit_async(
                         session_id,
                         call["tool"],
                         f"execute {call['tool']}",
                         {"args": call["args"]},
-                        result[:100]
+                        result[:100],
                     )
 
             # Add assistant response to history
-            self.session_manager.add_message(session_id, "assistant", full_response)
+            await self.session_manager.add_message_async(session_id, "assistant", full_response)
 
         except Exception as e:
             error_msg = f"\n\nError: {str(e)}"
@@ -373,39 +397,30 @@ Always explain what you're doing before calling tools. Be concise and helpful.""
         Yields:
             Tokens from the model
         """
-        import threading
+        payload = {
+            "model": model_name,
+            "messages": messages,
+            "stream": True,
+        }
+        endpoint = f"{self.ollama_url}/api/chat"
+        timeout = httpx.Timeout(connect=5.0, read=300.0, write=5.0, pool=5.0)
 
-        def fetch_stream():
-            """Fetch response in thread."""
-            try:
-                payload = json.dumps({
-                    "model": model_name,
-                    "messages": messages,
-                    "stream": True,
-                }).encode()
-
-                endpoint = f"{self.ollama_url}/api/chat"
-                import urllib.request
-                req = urllib.request.Request(
-                    endpoint,
-                    data=payload,
-                    headers={"Content-Type": "application/json"},
-                )
-
-                with urlopen(req, timeout=300) as response:
-                    for line in response:
-                        data = json.loads(line.decode())
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("POST", endpoint, json=payload) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
                         if "message" in data and "content" in data["message"]:
                             yield data["message"]["content"]
-
-            except Exception as e:
-                logger.error(f"Ollama call failed: {e}")
-                yield f"Error contacting Ollama: {str(e)}"
-
-        # Run fetch in background and yield results
-        gen = fetch_stream()
-        for chunk in gen:
-            yield chunk
+        except httpx.HTTPError as e:
+            logger.error(f"Ollama call failed: {e}")
+            yield f"Error contacting Ollama: {str(e)}"
 
     def list_models(self) -> List[Dict]:
         """List available models from Ollama."""
@@ -443,7 +458,8 @@ async def list_models():
     """List available models."""
     if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
-    return {"models": agent.list_models()}
+    models = await asyncio.to_thread(agent.list_models)
+    return {"models": models}
 
 
 @app.get("/api/sessions")
@@ -451,7 +467,7 @@ async def list_sessions():
     """List all sessions."""
     if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
-    sessions = agent.session_manager.list_sessions()
+    sessions = await agent.session_manager.list_sessions_async()
     return {"sessions": sessions}
 
 
@@ -461,11 +477,11 @@ async def get_session(session_id: str):
     if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     
-    session_info = agent.session_manager.get_session_info(session_id)
+    session_info = await agent.session_manager.get_session_info_async(session_id)
     if not session_info:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    messages = agent.session_manager.get_history(session_id, limit=100)
+    messages = await agent.session_manager.get_history_async(session_id, limit=100)
     return {"session": session_info, "messages": messages}
 
 
@@ -474,7 +490,7 @@ async def create_session(model_name: str = "neural-chat"):
     """Create a new session."""
     if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
-    session_id = agent.session_manager.create_session(model_name)
+    session_id = await agent.session_manager.create_session_async(model_name)
     return {"session_id": session_id}
 
 
@@ -494,9 +510,21 @@ async def websocket_chat(websocket: WebSocket):
         session_id = data.get("session_id")
         use_case = data.get("use_case", "general")
 
-        # Stream response
+        # Stream response with small batching to reduce UI churn
+        buffer = []
+        last_flush = time.monotonic()
+        flush_interval = 0.05
+
         async for token in agent.stream_chat(model_name, user_message, session_id, use_case):
-            await websocket.send_text(token)
+            buffer.append(token)
+            now = time.monotonic()
+            if now - last_flush >= flush_interval:
+                await websocket.send_text("".join(buffer))
+                buffer.clear()
+                last_flush = now
+
+        if buffer:
+            await websocket.send_text("".join(buffer))
 
         await websocket.send_json({"type": "done"})
 
