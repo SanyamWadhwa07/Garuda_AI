@@ -161,7 +161,8 @@ def setup(password: Optional[str], no_password: bool, port: int):
                 click.echo("✓ Ollama installed")
             else:
                 click.echo(style("⚠️ Ollama installation failed", fg="yellow"))
-                click.echo("   You can install Ollama manually from: https://ollama.ai")
+                click.echo("   Install Ollama manually with:")
+                click.echo("   curl -fsSL https://ollama.com/install.sh | sh")
                 click.echo("   Then restart this setup.")
         else:
             click.echo("  Skipping Ollama installation.")
@@ -175,7 +176,8 @@ def setup(password: Optional[str], no_password: bool, port: int):
             click.echo("✓ Ollama server running")
         else:
             click.echo(style("⚠️ Could not start Ollama", fg="yellow"))
-            click.echo("   Run 'ollama serve' in another terminal to start it manually")
+            click.echo("   Make sure Ollama is installed, then run in another terminal:")
+            click.echo("   ollama serve")
     else:
         click.echo("✓ Ollama server already running")
 

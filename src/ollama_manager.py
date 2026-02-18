@@ -17,8 +17,8 @@ from urllib.error import URLError
 class OllamaManager:
     """Manage Ollama installation and lifecycle."""
 
-    # Latest Ollama release - update this as new versions come out
-    OLLAMA_URL = "https://github.com/ollama/ollama/releases/download/v0.3.0/ollama-linux-x86_64.tar.gz"
+    # Official Ollama install script - handles all platform details
+    OLLAMA_INSTALL_URL = "https://ollama.com/install.sh"
     OLLAMA_PORT = 11434
 
     def __init__(self, install_dir: str = "~/.local/share/garudaai/ollama"):
@@ -68,13 +68,13 @@ class OllamaManager:
         return "ollama"  # Fallback: assume in PATH
 
     def install(self, progress_callback=None) -> bool:
-        """Download and install Ollama.
+        """Download and install Ollama using official install script.
         
         Args:
             progress_callback: Optional function to call with progress messages
             
         Returns:
-            True if installation successful
+            True if installation successful or already installed
         """
         if self.is_installed():
             if progress_callback:
@@ -82,51 +82,47 @@ class OllamaManager:
             return True
 
         if progress_callback:
-            progress_callback(f"Downloading Ollama from {self.OLLAMA_URL}...")
+            progress_callback("Installing Ollama via official install script...")
+            progress_callback(f"Running: curl -fsSL {self.OLLAMA_INSTALL_URL} | sh")
 
-        self.install_dir.mkdir(parents=True, exist_ok=True)
-
-        # Download
         try:
-            tar_path = self.install_dir / "ollama.tar.gz"
-            with urlopen(self.OLLAMA_URL) as response:
-                with open(tar_path, 'wb') as out:
-                    total = int(response.headers.get('content-length', 0))
-                    downloaded = 0
-                    while True:
-                        chunk = response.read(8192)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        downloaded += len(chunk)
-                        if progress_callback and total > 0:
-                            pct = int(100 * downloaded / total)
-                            progress_callback(f"Downloaded {pct}%")
-        except URLError as e:
-            if progress_callback:
-                progress_callback(f"Download failed: {e}")
-                progress_callback(f"Tip: Check your internet connection or try installing Ollama manually from https://ollama.ai")
-            return False
-
-        # Extract
-        if progress_callback:
-            progress_callback("Extracting Ollama...")
-        try:
-            # Try tar for .tar.gz or .tgz files
-            subprocess.run(
-                ["tar", "-xzf", str(tar_path), "-C", str(self.install_dir)],
-                check=True,
-                timeout=30,
+            # Use official Ollama install script
+            # The script handles all platform-specific installation details
+            result = subprocess.run(
+                f"curl -fsSL {self.OLLAMA_INSTALL_URL} | sh",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minutes for download + install
             )
-            tar_path.unlink()
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            if progress_callback:
-                progress_callback(f"Extraction failed: {e}")
-            return False
+            
+            if result.returncode != 0:
+                if progress_callback:
+                    progress_callback(f"Installation script failed: {result.stderr}")
+                    progress_callback("Please ensure you have curl installed and can access https://ollama.com")
+                return False
 
-        if progress_callback:
-            progress_callback("Ollama installed successfully")
-        return True
+            # Verify installation
+            if self.is_installed():
+                if progress_callback:
+                    progress_callback("Ollama installed successfully")
+                return True
+            else:
+                if progress_callback:
+                    progress_callback("Installation script ran but Ollama binary not found")
+                    progress_callback("Tip: Try running 'curl -fsSL https://ollama.com/install.sh | sh' manually")
+                return False
+
+        except subprocess.TimeoutExpired:
+            if progress_callback:
+                progress_callback("Installation timed out (took > 5 minutes)")
+                progress_callback("Tip: Try running 'curl -fsSL https://ollama.com/install.sh | sh' manually")
+            return False
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"Installation error: {e}")
+                progress_callback("Tip: Try running 'curl -fsSL https://ollama.com/install.sh | sh' manually")
+            return False
 
     def is_running(self) -> bool:
         """Check if Ollama is running."""
