@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="GarudaAI - Local AI Agent Platform">
+    <meta name="theme-color" content="#1a1a1a">
+    
+    <title>GarudaAI</title>
+    
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦅</text></svg>">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app" class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-title">
+                <h1>🦅 GarudaAI</h1>
+            </div>
+            <div class="header-controls">
+                <select id="model-selector" class="model-selector">
+                    <option value="">Loading models...</option>
+                </select>
+                <button id="settings-btn" class="btn-icon" title="Settings">⚙️</button>
+                <button id="voice-btn" class="btn-icon" title="Voice input">🎤</button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="column-messages">
+                <!-- Messages Area -->
+                <div id="messages" class="messages-container"></div>
+                
+                <!-- Input Area -->
+                <div class="input-area">
+                    <textarea 
+                        id="message-input" 
+                        class="message-input" 
+                        placeholder="Ask me anything..."
+                        rows="3"></textarea>
+                    <button id="send-btn" class="btn-primary">Send</button>
+                </div>
+            </div>
+
+            <!-- Right Sidebar (hidden by default on mobile) -->
+            <aside id="sidebar" class="sidebar">
+                <div class="sidebar-tabs">
+                    <button class="tab-btn active" data-tab="files">📁 Files</button>
+                    <button class="tab-btn" data-tab="history">📜 History</button>
+                    <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+                </div>
+
+                <!-- File Browser -->
+                <div id="files-tab" class="tab-content active">
+                    <div class="file-browser">
+                        <div class="breadcrumb">
+                            <span id="current-path">/home</span>
+                        </div>
+                        <div id="file-list" class="file-list"></div>
+                    </div>
+                </div>
+
+                <!-- Session History -->
+                <div id="history-tab" class="tab-content">
+                    <div class="history-container">
+                        <button id="clear-history-btn" class="btn-small">Clear History</button>
+                        <div id="history-list" class="history-list"></div>
+                    </div>
+                </div>
+
+                <!-- Settings -->
+                <div id="settings-tab" class="tab-content">
+                    <div class="settings-container">
+                        <div class="setting">
+                            <label>
+                                <input type="checkbox" id="voice-toggle" checked>
+                                Voice Input
+                            </label>
+                        </div>
+                        <div class="setting">
+                            <label>
+                                <input type="checkbox" id="file-browser-toggle" checked>
+                                File Browser
+                            </label>
+                        </div>
+                        <div class="setting">
+                            <label for="history-limit">Keep Last:</label>
+                            <input type="number" id="history-limit" min="1" max="100" value="50">
+                            messages
+                        </div>
+                        <button id="reset-btn" class="btn-small danger">Reset Settings</button>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Modal for settings -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button class="btn-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="password-input">Set Password:</label>
+                    <input type="password" id="password-input" placeholder="Leave empty to skip">
+                    <button id="password-btn" class="btn-small">Update Password</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/sw-register.js"></script>
+    <script src="/script.js"></script>
+</body>
+</html>

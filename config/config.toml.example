@@ -1,0 +1,44 @@
+# GarudaAI Configuration Template
+# Copy this to ~/.config/garudaai/config.toml and customize
+
+[server]
+# Port to run the FastAPI backend on
+port = 8000
+# Enable HTTPS with self-signed certificate
+https = true
+# Bind to all interfaces (accessible from network) or localhost only
+bind_all = true
+
+[auth]
+# Password hash (bcrypt). Set via 'garudaai setup'
+password_hash = ""
+
+[models]
+# Default model to load
+default_model = "neural-chat"
+# Ollama API endpoint
+ollama_url = "http://localhost:11434"
+
+[paths]
+# Home directory (default: $HOME)
+home_dir = "~"
+# Session data directory
+session_dir = "~/.local/share/garudaai"
+# Cache directory
+cache_dir = "~/.cache/garudaai"
+
+[tools]
+# Enable filesystem access (Phase 1: read-only)
+filesystem_enabled = true
+# Enable safe shell execution
+shell_enabled = true
+# Whitelist of allowed shell commands
+shell_whitelist = ["ls", "find", "grep", "pwd", "cat", "head", "tail", "file", "stat"]
+
+[features]
+# Enable voice input in PWA
+voice_input = true
+# Enable file browser widget
+file_browser = true
+# Enable session history
+session_history = true

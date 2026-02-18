@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "garudaai"
+version = "0.1.0"
+description = "A self-hosted, hardware-aware, phone-controlled local AI agent platform"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "GarudaAI Contributors", email = "dev@garudaai.local" }
+]
+keywords = ["ai", "ollama", "agent", "local", "pwa", "garuda"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Communications :: Chat",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.104.1",
+    "uvicorn==0.24.0",
+    "pydantic==2.5.0",
+    "requests==2.31.0",
+    "click==8.1.7",
+    "tomli==2.0.1",
+    "tomli-w==1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "black>=23.0",
+    "ruff>=0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/garudaai/garudaai"
+Documentation = "https://garudaai.readthedocs.io"
+Repository = "https://github.com/garudaai/garudaai.git"
+Issues = "https://github.com/garudaai/garudaai/issues"
+
+[project.scripts]
+garudaai = "src.cli:main"
+
+[tool.setuptools]
+packages = ["src"]
+package-data = { src = ["static/**/*"] }
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "C",    # flake8-comprehensions
+    "B",    # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long
+    "B008",  # function calls in defaults
+]

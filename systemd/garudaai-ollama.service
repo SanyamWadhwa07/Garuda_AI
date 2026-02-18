@@ -1,0 +1,22 @@
+[Unit]
+Description=Ollama LLM Server (managed by GarudaAI)
+Documentation=https://ollama.ai
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%u
+ExecStart=/usr/local/bin/ollama serve
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment="OLLAMA_HOST=127.0.0.1:11434"
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
