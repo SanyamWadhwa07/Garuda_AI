@@ -167,6 +167,7 @@ class ModelSuggester:
                     "quantization": m.quantization,
                     "use_cases": m.use_cases,
                     "description": m.description,
+                    "parameters_billion": m.parameters_billion,
                 }
                 for m in selected_models
             ],

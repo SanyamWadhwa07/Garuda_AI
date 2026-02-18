@@ -180,10 +180,10 @@ class HardwareDetector:
                 capture_output=True,
                 text=True,
                 timeout=10,
-                stderr=subprocess.STDOUT,
             )
             # Parse output like "100 MB/s"
-            for line in result.stdout.split('\n'):
+            output = result.stdout + result.stderr
+            for line in output.split('\n'):
                 if "MB/s" in line:
                     parts = line.split()
                     try:

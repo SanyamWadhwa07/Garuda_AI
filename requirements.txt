@@ -1,7 +1,7 @@
-fastapi==0.104.1
-uvicorn==0.24.0
-pydantic==2.5.0
-requests==2.31.0
-click==8.1.7
-tomli==2.0.1
-tomli-w==1.0.0
+fastapi>=0.109.0
+uvicorn>=0.28.0
+pydantic>=2.9.0
+requests>=2.32.0
+click>=8.1.7
+tomli>=2.0.1
+tomli-w>=1.0.0
