@@ -422,11 +422,6 @@ Always explain what you're doing before calling tools. Be concise and helpful.""
 # FastAPI Application
 app = FastAPI(title="GarudaAI", version="0.1.0")
 
-# Mount static files
-static_dir = Path(__file__).parent / "static"
-if static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
-
 # Session management
 agent = None
 
@@ -511,6 +506,12 @@ async def websocket_chat(websocket: WebSocket):
         await websocket.send_json({"type": "error", "message": str(e)})
     finally:
         await websocket.close()
+
+
+# Mount static files AFTER all API routes are defined
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 
 def run_agent(
