@@ -7,7 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 import ssl
-import hashlib
+
+_is_windows = sys.platform == "win32"
 
 import click
 from click import echo, style
@@ -50,8 +51,65 @@ def save_config(config: dict):
 
 
 def hash_password(password: str) -> str:
-    """Hash a password with SHA256."""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hash a password with bcrypt."""
+    from passlib.hash import bcrypt
+    return bcrypt.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    """Verify a plain password against a bcrypt hash."""
+    from passlib.hash import bcrypt
+    try:
+        return bcrypt.verify(plain, hashed)
+    except Exception:
+        return False
+
+
+def _generate_self_signed_cert(key_file: Path, cert_file: Path):
+    """Generate a self-signed TLS certificate using the cryptography library."""
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "garudaai.local"),
+        ])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime.utcnow())
+            .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+            .add_extension(x509.SubjectAlternativeName([
+                x509.DNSName("garudaai.local"),
+                x509.DNSName("localhost"),
+            ]), critical=False)
+            .sign(key, hashes.SHA256())
+        )
+        key_file.write_bytes(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ))
+        cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        click.echo("✓ Self-signed certificate generated")
+    except ImportError:
+        # Fall back to openssl CLI on non-Windows
+        if not _is_windows:
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-keyout", str(key_file), "-out", str(cert_file),
+                "-days", "365", "-nodes", "-subj", "/CN=garudaai.local"
+            ], check=False, capture_output=True)
+            click.echo("✓ Self-signed certificate generated (openssl)")
+        else:
+            click.echo("⚠️ Install 'cryptography' package for HTTPS support: pip install cryptography")
 
 
 @click.group()
@@ -205,6 +263,7 @@ def setup(password: Optional[str], no_password: bool, port: int, prefer_smaller:
 
     # Password setup
     click.echo(style("Step 4: Security Setup", fg="cyan"))
+    click.echo("  Note: Passwords are hashed with bcrypt. Re-run setup if you had a previous SHA256 hash.")
     if no_password:
         password_hash = ""
         click.echo("⚠️ Password protection disabled (only use on trusted networks!)")
@@ -212,7 +271,7 @@ def setup(password: Optional[str], no_password: bool, port: int, prefer_smaller:
         if not password:
             password = click.prompt("Enter password for web interface", hide_input=True, confirmation_prompt=True)
         password_hash = hash_password(password)
-        click.echo("✓ Password set")
+        click.echo("✓ Password set (bcrypt)")
 
     click.echo()
 
@@ -284,22 +343,21 @@ def serve(host: str, port: Optional[int], https: bool):
 
     if https and not (key_file.exists() and cert_file.exists()):
         click.echo("Generating self-signed certificate...")
-        subprocess.run([
-            "openssl", "req", "-x509", "-newkey", "rsa:4096",
-            "-keyout", str(key_file), "-out", str(cert_file),
-            "-days", "365", "-nodes", "-subj", "/CN=garudaai.local"
-        ], check=False)
+        _generate_self_signed_cert(key_file, cert_file)
 
-    # Register mDNS
-    try:
-        subprocess.Popen([
-            "avahi-publish-service",
-            f"garudaai", "_http._tcp", str(port),
-            "path=/", "description=GarudaAI Local AI Agent"
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        click.echo(f"✓ Registered at {style('garudaai.local:' + str(port), fg='green')}")
-    except FileNotFoundError:
-        click.echo("  (Avahi not available; use localhost)")
+    # Register mDNS (Linux only)
+    if not _is_windows:
+        try:
+            subprocess.Popen([
+                "avahi-publish-service",
+                "garudaai", "_http._tcp", str(port),
+                "path=/", "description=GarudaAI Local AI Agent"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            click.echo(f"✓ Registered at {style('garudaai.local:' + str(port), fg='green')}")
+        except FileNotFoundError:
+            click.echo("  (Avahi not available; use localhost)")
+    else:
+        click.echo(f"  Access at https://localhost:{port}")
 
     click.echo()
     click.echo(style("Server running. Press Ctrl+C to stop.", fg="green"))
@@ -340,28 +398,50 @@ def status():
     else:
         click.echo("✗ Ollama not running (start with 'garudaai serve')")
 
-    # Check service
-    try:
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", "garudaai"],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            click.echo("✓ Service running")
-        else:
-            click.echo("✗ Service not running")
-    except FileNotFoundError:
-        click.echo("  (systemd service not installed)")
+    # Check service (Linux) or HTTP probe (Windows)
+    if _is_windows:
+        try:
+            from urllib.request import urlopen
+            config = load_config()
+            srv_port = config.get("server", {}).get("port", 8000)
+            urlopen(f"http://localhost:{srv_port}/api/health", timeout=2)
+            click.echo("✓ Server responding on localhost")
+        except Exception:
+            click.echo("✗ Server not reachable (run 'garudaai serve')")
+    else:
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", "garudaai"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                click.echo("✓ Service running")
+            else:
+                click.echo("✗ Service not running")
+        except FileNotFoundError:
+            click.echo("  (systemd service not installed)")
 
 
 @cli.command()
 @click.option("-n", "--lines", type=int, default=50, help="Number of lines to show")
 def logs(lines: int):
     """View service logs."""
-    try:
-        subprocess.run(["journalctl", "--user", "-u", "garudaai", "-n", str(lines), "-f"])
-    except FileNotFoundError:
-        click.echo("journalctl not found", err=True)
+    if _is_windows:
+        log_file = Path("~/.local/share/garudaai/garudaai.log").expanduser()
+        if not log_file.exists():
+            click.echo("No log file found. Start the server first.", err=True)
+            return
+        try:
+            all_lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in all_lines[-lines:]:
+                click.echo(line)
+        except Exception as e:
+            click.echo(f"Error reading log: {e}", err=True)
+    else:
+        try:
+            subprocess.run(["journalctl", "--user", "-u", "garudaai", "-n", str(lines), "--no-pager"])
+        except FileNotFoundError:
+            click.echo("journalctl not found", err=True)
 
 
 def main():

@@ -1,128 +1,166 @@
 """Ollama manager for GarudaAI.
 
 Handles Ollama installation, lifecycle, and model management.
+Cross-platform: Linux, macOS, Windows.
 """
 
-import subprocess
 import json
-import time
-import os
+import shutil
+import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 from urllib.error import URLError
+
+_IS_WINDOWS = sys.platform == "win32"
+
+# Official Ollama download URLs
+_OLLAMA_LINUX_INSTALL_URL = "https://ollama.com/install.sh"
+_OLLAMA_WINDOWS_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 
 
 class OllamaManager:
     """Manage Ollama installation and lifecycle."""
 
-    # Official Ollama install script - handles all platform details
-    OLLAMA_INSTALL_URL = "https://ollama.com/install.sh"
     OLLAMA_PORT = 11434
 
     def __init__(self, install_dir: str = "~/.local/share/garudaai/ollama"):
-        """Initialize Ollama manager.
-        
-        Args:
-            install_dir: Directory to install Ollama to
-        """
         self.install_dir = Path(install_dir).expanduser()
         self.ollama_bin = self.install_dir / "bin" / "ollama"
         self.models_dir = self.install_dir / "models"
 
-    def is_installed(self) -> bool:
-        """Check if Ollama is installed."""
-        # Check system ollama first
-        try:
-            subprocess.run(
-                ["which", "ollama"],
-                capture_output=True,
-                check=True,
-                timeout=2,
-            )
-            return True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+    # ------------------------------------------------------------------
+    # Installation checks
+    # ------------------------------------------------------------------
 
-        # Check local installation
+    def is_installed(self) -> bool:
+        """Check if Ollama is installed (system PATH or local binary)."""
+        if shutil.which("ollama"):
+            return True
         return self.ollama_bin.exists()
 
     def get_ollama_path(self) -> str:
-        """Get path to ollama binary."""
-        try:
-            result = subprocess.run(
-                ["which", "ollama"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
+        """Return path to the ollama binary."""
+        path = shutil.which("ollama")
+        if path:
+            return path
         if self.ollama_bin.exists():
             return str(self.ollama_bin)
+        return "ollama"
 
-        return "ollama"  # Fallback: assume in PATH
+    # ------------------------------------------------------------------
+    # Installation
+    # ------------------------------------------------------------------
 
     def install(self, progress_callback=None) -> bool:
-        """Download and install Ollama using official install script.
-        
-        Args:
-            progress_callback: Optional function to call with progress messages
-            
-        Returns:
-            True if installation successful or already installed
-        """
+        """Download and install Ollama safely (no shell=True)."""
         if self.is_installed():
             if progress_callback:
                 progress_callback("Ollama already installed")
             return True
 
+        if _IS_WINDOWS:
+            return self._install_windows(progress_callback)
+        else:
+            return self._install_unix(progress_callback)
+
+    def _install_unix(self, progress_callback=None) -> bool:
+        """Install Ollama on Linux/macOS by downloading and running the install script."""
         if progress_callback:
-            progress_callback("Installing Ollama via official install script...")
-            progress_callback(f"Running: curl -fsSL {self.OLLAMA_INSTALL_URL} | sh")
+            progress_callback("Downloading Ollama install script...")
 
         try:
-            # Use official Ollama install script
-            # The script handles all platform-specific installation details
+            # Download the install script to a temp file (no shell=True)
+            req = Request(_OLLAMA_LINUX_INSTALL_URL, headers={"User-Agent": "GarudaAI/0.1"})
+            with urlopen(req, timeout=30) as resp:
+                script_bytes = resp.read()
+
+            with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as tmp:
+                tmp.write(script_bytes)
+                tmp_path = tmp.name
+
+            if progress_callback:
+                progress_callback("Running install script...")
+
             result = subprocess.run(
-                f"curl -fsSL {self.OLLAMA_INSTALL_URL} | sh",
-                shell=True,
+                ["sh", tmp_path],
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 minutes for download + install
+                timeout=300,
             )
-            
+
+            try:
+                Path(tmp_path).unlink()
+            except OSError:
+                pass
+
             if result.returncode != 0:
                 if progress_callback:
-                    progress_callback(f"Installation script failed: {result.stderr}")
-                    progress_callback("Please ensure you have curl installed and can access https://ollama.com")
+                    progress_callback(f"Install script failed: {result.stderr[:200]}")
                 return False
 
-            # Verify installation
             if self.is_installed():
                 if progress_callback:
                     progress_callback("Ollama installed successfully")
                 return True
-            else:
-                if progress_callback:
-                    progress_callback("Installation script ran but Ollama binary not found")
-                    progress_callback("Tip: Try running 'curl -fsSL https://ollama.com/install.sh | sh' manually")
-                return False
 
-        except subprocess.TimeoutExpired:
             if progress_callback:
-                progress_callback("Installation timed out (took > 5 minutes)")
-                progress_callback("Tip: Try running 'curl -fsSL https://ollama.com/install.sh | sh' manually")
+                progress_callback("Script ran but Ollama not found in PATH")
             return False
+
         except Exception as e:
             if progress_callback:
                 progress_callback(f"Installation error: {e}")
-                progress_callback("Tip: Try running 'curl -fsSL https://ollama.com/install.sh | sh' manually")
             return False
+
+    def _install_windows(self, progress_callback=None) -> bool:
+        """Install Ollama on Windows by downloading and running the GUI installer silently."""
+        if progress_callback:
+            progress_callback("Downloading OllamaSetup.exe...")
+
+        try:
+            req = Request(_OLLAMA_WINDOWS_INSTALLER_URL, headers={"User-Agent": "GarudaAI/0.1"})
+            with urlopen(req, timeout=120) as resp:
+                installer_bytes = resp.read()
+
+            with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tmp:
+                tmp.write(installer_bytes)
+                installer_path = tmp.name
+
+            if progress_callback:
+                progress_callback("Running OllamaSetup.exe silently...")
+
+            result = subprocess.run(
+                [installer_path, "/VERYSILENT", "/NORESTART"],
+                capture_output=True,
+                timeout=300,
+            )
+
+            try:
+                Path(installer_path).unlink()
+            except OSError:
+                pass
+
+            if self.is_installed():
+                if progress_callback:
+                    progress_callback("Ollama installed successfully")
+                return True
+
+            if progress_callback:
+                progress_callback(f"Installer exited {result.returncode} but Ollama not found")
+            return False
+
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"Installation error: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def is_running(self) -> bool:
         """Check if Ollama is running."""
@@ -133,14 +171,7 @@ class OllamaManager:
             return False
 
     def start(self, progress_callback=None) -> bool:
-        """Start Ollama server.
-        
-        Args:
-            progress_callback: Optional function to call with progress messages
-            
-        Returns:
-            True if Ollama started successfully
-        """
+        """Start Ollama server."""
         if self.is_running():
             if progress_callback:
                 progress_callback("Ollama already running")
@@ -158,18 +189,16 @@ class OllamaManager:
         ollama_path = self.get_ollama_path()
 
         try:
-            # Start Ollama in background via systemd user service if managed by us
-            # For now, try to start directly
-            subprocess.Popen(
-                [ollama_path, "serve"],
+            popen_kwargs = dict(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
             )
+            if not _IS_WINDOWS:
+                popen_kwargs["start_new_session"] = True
 
-            # Wait for health check
-            max_retries = 30
-            for i in range(max_retries):
+            subprocess.Popen([ollama_path, "serve"], **popen_kwargs)
+
+            for i in range(30):
                 if self.is_running():
                     if progress_callback:
                         progress_callback("Ollama server ready")
@@ -187,16 +216,12 @@ class OllamaManager:
                 progress_callback(f"Failed to start Ollama: {e}")
             return False
 
+    # ------------------------------------------------------------------
+    # Model management
+    # ------------------------------------------------------------------
+
     def pull_model(self, model_name: str, progress_callback=None) -> bool:
-        """Pull a model from Ollama registry.
-        
-        Args:
-            model_name: Model name (e.g., "neural-chat:7b")
-            progress_callback: Optional function to call with progress messages
-            
-        Returns:
-            True if model pulled successfully
-        """
+        """Pull a model from Ollama registry."""
         if not self.is_running():
             if progress_callback:
                 progress_callback("Ollama not running, starting...")
@@ -210,10 +235,8 @@ class OllamaManager:
             response = urlopen(
                 f"http://localhost:{self.OLLAMA_PORT}/api/pull",
                 data=json.dumps({"name": model_name}).encode(),
-                timeout=None,  # No timeout for large model pulls
+                timeout=None,
             )
-
-            # Stream response
             for line in response:
                 try:
                     data = json.loads(line.decode())
@@ -239,7 +262,6 @@ class OllamaManager:
         """List all downloaded models."""
         if not self.is_running():
             return []
-
         try:
             response = urlopen(f"http://localhost:{self.OLLAMA_PORT}/api/tags", timeout=5)
             data = json.loads(response.read().decode())
@@ -251,9 +273,7 @@ class OllamaManager:
         """Delete a model."""
         if not self.is_running():
             return False
-
         try:
-            # Ollama doesn't have a standard delete API yet, so use CLI
             ollama_path = self.get_ollama_path()
             result = subprocess.run(
                 [ollama_path, "rm", model_name],
@@ -266,8 +286,7 @@ class OllamaManager:
 
     def get_model_info(self, model_name: str) -> Optional[Dict[str, Any]]:
         """Get info about a specific model."""
-        models = self.list_models()
-        for model in models:
+        for model in self.list_models():
             if model.get("name") == model_name:
                 return model
         return None

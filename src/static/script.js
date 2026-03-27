@@ -1,586 +1,690 @@
 /**
  * GarudaAI Frontend
- * Main application logic for chat interface
+ * Chat interface with markdown rendering, auth, WebSocket reconnection, and session management.
  */
 
+// ---------------------------------------------------------------------------
 // State
+// ---------------------------------------------------------------------------
 let currentModel = null;
 let currentSessionId = null;
-let isConnected = false;
 let voiceEnabled = localStorage.getItem('voiceEnabled') !== 'false';
 let recognitionActive = false;
 let speechRecognition = null;
+let authToken = localStorage.getItem('garudaai_token') || '';
+let totalTokensThisSession = 0;
 
-// DOM Elements
+// ---------------------------------------------------------------------------
+// DOM refs
+// ---------------------------------------------------------------------------
 const app = {
-    messages: document.getElementById('messages'),
-    input: document.getElementById('message-input'),
-    sendBtn: document.getElementById('send-btn'),
-    modelSelector: document.getElementById('model-selector'),
-    voiceBtn: document.getElementById('voice-btn'),
-    settingsBtn: document.getElementById('settings-btn'),
-    sidebar: document.getElementById('sidebar'),
-    fileList: document.getElementById('file-list'),
+    messages:        document.getElementById('messages'),
+    input:           document.getElementById('message-input'),
+    sendBtn:         document.getElementById('send-btn'),
+    modelSelector:   document.getElementById('model-selector'),
+    voiceBtn:        document.getElementById('voice-btn'),
+    settingsBtn:     document.getElementById('settings-btn'),
+    sidebar:         document.getElementById('sidebar'),
+    fileList:        document.getElementById('file-list'),
     clearHistoryBtn: document.getElementById('clear-history-btn'),
-    settingsModal: document.getElementById('settings-modal'),
-    voiceToggle: document.getElementById('voice-toggle'),
-    passwordBtn: document.getElementById('password-btn'),
-    tabBtns: document.querySelectorAll('.tab-btn'),
-    tabContents: document.querySelectorAll('.tab-content'),
+    settingsModal:   document.getElementById('settings-modal'),
+    voiceToggle:     document.getElementById('voice-toggle'),
+    passwordBtn:     document.getElementById('password-btn'),
+    tabBtns:         document.querySelectorAll('.tab-btn'),
+    tabContents:     document.querySelectorAll('.tab-content'),
+    connStatus:      document.getElementById('conn-status'),
+    slowBadge:       document.getElementById('slow-mode-badge'),
+    sidebarToggle:   document.getElementById('sidebar-toggle-btn'),
+    loginOverlay:    document.getElementById('login-overlay'),
+    loginPassword:   document.getElementById('login-password'),
+    loginBtn:        document.getElementById('login-btn'),
+    loginError:      document.getElementById('login-error'),
 };
 
-// Initialize
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('GarudaAI initializing...');
-    
-    // Load models
-    await loadModels();
-    
-    // Setup event listeners
-    setupEventListeners();
-    
-    // Load local settings
     loadSettings();
-    
-    // Setup speech recognition if available
+
+    // Check auth — try loading models; if 401, show login
+    const ok = await tryLoadModels();
+    if (!ok) {
+        showLoginOverlay();
+        return;
+    }
+
+    finishInit();
+});
+
+async function finishInit() {
+    setupEventListeners();
+
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
         setupSpeechRecognition();
     } else {
         app.voiceBtn.disabled = true;
+        app.voiceBtn.title = 'Voice input not supported in this browser';
     }
-    
-    // Create new session
-    createNewSession();
-    
-    console.log('GarudaAI ready');
-    addSystemMessage('Welcome to GarudaAI! Select a model and start chatting.');
-});
 
-/**
- * Load available models
- */
-async function loadModels() {
+    await createNewSession();
+    addSystemMessage('Welcome to GarudaAI! Select a model and start chatting. Press Ctrl+Enter or click Send.');
+    console.log('GarudaAI ready');
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+function showLoginOverlay() {
+    app.loginOverlay.style.display = 'flex';
+    app.loginPassword.focus();
+}
+
+function hideLoginOverlay() {
+    app.loginOverlay.style.display = 'none';
+}
+
+async function doLogin() {
+    const password = app.loginPassword.value;
+    app.loginError.textContent = '';
+    app.loginBtn.disabled = true;
+
     try {
-        const response = await fetch('/api/models');
-        const data = await response.json();
-        const models = data.models || [];
-        
-        app.modelSelector.innerHTML = '';
-        
-        if (models.length === 0) {
-            app.modelSelector.innerHTML = '<option>No models available</option>';
+        const resp = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({password}),
+        });
+        if (!resp.ok) {
+            app.loginError.textContent = 'Incorrect password.';
+            app.loginBtn.disabled = false;
+            app.loginPassword.value = '';
+            app.loginPassword.focus();
             return;
         }
-        
-        const parseModelSize = (name) => {
-            if (!name) return Number.POSITIVE_INFINITY;
-            const match = String(name).match(/(\d+(?:\.\d+)?)\s*b/i);
-            return match ? parseFloat(match[1]) : Number.POSITIVE_INFINITY;
-        };
-
-        models.forEach(model => {
-            const option = document.createElement('option');
-            option.value = model.name;
-            option.textContent = model.name;
-            app.modelSelector.appendChild(option);
-        });
-
-        let smallest = models[0];
-        let smallestSize = parseModelSize(models[0].name);
-        models.slice(1).forEach(model => {
-            const size = parseModelSize(model.name);
-            if (size < smallestSize) {
-                smallest = model;
-                smallestSize = size;
-            }
-        });
-
-        currentModel = (smallest && smallest.name) ? smallest.name : models[0].name;
-        app.modelSelector.value = currentModel;
-        
-    } catch (error) {
-        console.error('Failed to load models:', error);
-        app.modelSelector.innerHTML = '<option>Error loading models</option>';
+        const data = await resp.json();
+        authToken = data.token;
+        localStorage.setItem('garudaai_token', authToken);
+        hideLoginOverlay();
+        await tryLoadModels();
+        finishInit();
+    } catch (e) {
+        app.loginError.textContent = 'Login failed: ' + e.message;
+        app.loginBtn.disabled = false;
     }
 }
 
-/**
- * Setup event listeners
- */
+function authHeaders() {
+    const h = {'Content-Type': 'application/json'};
+    if (authToken) h['Authorization'] = `Bearer ${authToken}`;
+    return h;
+}
+
+async function apiFetch(path, opts = {}) {
+    opts.headers = {...(opts.headers || {}), ...authHeaders()};
+    const resp = await fetch(path, opts);
+    if (resp.status === 401) {
+        authToken = '';
+        localStorage.removeItem('garudaai_token');
+        showLoginOverlay();
+        throw new Error('Session expired — please log in again');
+    }
+    return resp;
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+async function tryLoadModels() {
+    try {
+        const resp = await fetch('/api/models', {
+            headers: authToken ? {Authorization: `Bearer ${authToken}`} : {},
+        });
+        if (resp.status === 401) return false;
+        const data = await resp.json();
+        populateModelSelector(data.models || []);
+        return true;
+    } catch {
+        app.modelSelector.innerHTML = '<option>Error loading models</option>';
+        return true; // network issue, not auth issue
+    }
+}
+
+function populateModelSelector(models) {
+    app.modelSelector.innerHTML = '';
+
+    if (models.length === 0) {
+        app.modelSelector.innerHTML = '<option value="">No models — run: ollama pull llama3.2:3b</option>';
+        return;
+    }
+
+    // Group: normal vs airllm
+    const normal = models.filter(m => !m.name.includes('-airllm'));
+    const airllm = models.filter(m => m.name.includes('-airllm'));
+
+    const addGroup = (label, list) => {
+        if (!list.length) return;
+        const grp = document.createElement('optgroup');
+        grp.label = label;
+        list.forEach(model => {
+            const opt = document.createElement('option');
+            opt.value = model.name;
+            opt.textContent = model.name;
+            grp.appendChild(opt);
+        });
+        app.modelSelector.appendChild(grp);
+    };
+
+    addGroup('Models', normal);
+    addGroup('Slow Mode (AirLLM)', airllm);
+
+    // Auto-select smallest non-airllm model
+    const parseSize = name => {
+        const m = String(name || '').match(/(\d+(?:\.\d+)?)\s*b/i);
+        return m ? parseFloat(m[1]) : Infinity;
+    };
+    const sorted = [...normal].sort((a, b) => parseSize(a.name) - parseSize(b.name));
+    currentModel = sorted[0] ? sorted[0].name : models[0].name;
+    app.modelSelector.value = currentModel;
+    updateSlowModeBadge();
+}
+
+function updateSlowModeBadge() {
+    const isSlowMode = currentModel && currentModel.includes('-airllm');
+    app.slowBadge.style.display = isSlowMode ? 'inline-block' : 'none';
+}
+
+// ---------------------------------------------------------------------------
+// Event Listeners
+// ---------------------------------------------------------------------------
 function setupEventListeners() {
-    // Send button
     app.sendBtn.addEventListener('click', sendMessage);
-    
-    // Enter key
-    app.input.addEventListener('keydown', (e) => {
+
+    app.input.addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             sendMessage();
         }
     });
-    
-    // Model selector
-    app.modelSelector.addEventListener('change', (e) => {
+
+    // Auto-expand textarea
+    app.input.addEventListener('input', e => {
+        e.target.style.height = 'auto';
+        e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
+    });
+
+    app.modelSelector.addEventListener('change', e => {
         currentModel = e.target.value;
+        updateSlowModeBadge();
         createNewSession();
     });
-    
-    // Voice button
+
     app.voiceBtn.addEventListener('click', toggleVoiceInput);
-    
-    // Settings button
     app.settingsBtn.addEventListener('click', () => {
         app.settingsModal.style.display = 'block';
     });
-    
-    // Close modal
     document.querySelector('.btn-close').addEventListener('click', () => {
         app.settingsModal.style.display = 'none';
     });
-    
-    // Tab switching
-    app.tabBtns.forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const tab = e.target.dataset.tab;
-            switchTab(tab);
-        });
+
+    // Close modal on backdrop click
+    app.settingsModal.addEventListener('click', e => {
+        if (e.target === app.settingsModal) app.settingsModal.style.display = 'none';
     });
-    
-    // Clear history
+
+    app.tabBtns.forEach(btn => {
+        btn.addEventListener('click', e => switchTab(e.currentTarget.dataset.tab));
+    });
+
     app.clearHistoryBtn.addEventListener('click', () => {
         if (confirm('Clear message history?')) {
             app.messages.innerHTML = '';
+            totalTokensThisSession = 0;
             createNewSession();
         }
     });
-    
-    // Settings toggles
-    app.voiceToggle.addEventListener('change', (e) => {
-        localStorage.setItem('voiceEnabled', e.target.checked ? 'true' : 'false');
+
+    app.voiceToggle.addEventListener('change', e => {
         voiceEnabled = e.target.checked;
+        localStorage.setItem('voiceEnabled', voiceEnabled ? 'true' : 'false');
     });
-    
-    // Password button
+
     app.passwordBtn.addEventListener('click', updatePassword);
+
+    // Sidebar toggle (mobile)
+    app.sidebarToggle.addEventListener('click', () => {
+        app.sidebar.classList.toggle('sidebar-open');
+    });
+
+    // Copy button delegation on messages container
+    app.messages.addEventListener('click', e => {
+        if (e.target.classList.contains('copy-btn')) {
+            const msgDiv = e.target.closest('.message');
+            if (!msgDiv) return;
+            const content = msgDiv.querySelector('.message-content');
+            const text = content.dataset.raw || content.textContent || '';
+            navigator.clipboard.writeText(text).then(() => {
+                e.target.textContent = '✓';
+                setTimeout(() => { e.target.textContent = '⎘'; }, 1500);
+            }).catch(() => {
+                e.target.textContent = '!';
+            });
+        }
+    });
+
+    // Login overlay
+    if (app.loginBtn) app.loginBtn.addEventListener('click', doLogin);
+    if (app.loginPassword) {
+        app.loginPassword.addEventListener('keydown', e => {
+            if (e.key === 'Enter') doLogin();
+        });
+    }
+
+    // Global keyboard shortcuts
+    document.addEventListener('keydown', e => {
+        // Ctrl+/ to focus input
+        if (e.ctrlKey && e.key === '/') {
+            e.preventDefault();
+            app.input.focus();
+        }
+        // Escape to close modal/sidebar
+        if (e.key === 'Escape') {
+            app.settingsModal.style.display = 'none';
+            app.sidebar.classList.remove('sidebar-open');
+        }
+    });
 }
 
-/**
- * Setup speech recognition
- */
+// ---------------------------------------------------------------------------
+// Speech Recognition
+// ---------------------------------------------------------------------------
 function setupSpeechRecognition() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    speechRecognition = new SpeechRecognition();
-    
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    speechRecognition = new SR();
     speechRecognition.continuous = false;
     speechRecognition.interimResults = false;
     speechRecognition.lang = 'en-US';
-    
-    speechRecognition.onresult = (event) => {
-        const transcript = Array.from(event.results)
-            .map(result => result[0].transcript)
-            .join('');
-        
-        app.input.value = transcript;
+
+    speechRecognition.onresult = e => {
+        app.input.value = Array.from(e.results).map(r => r[0].transcript).join('');
         recognitionActive = false;
         updateVoiceButton();
     };
-    
-    speechRecognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        recognitionActive = false;
-        updateVoiceButton();
-    };
-    
-    speechRecognition.onend = () => {
-        recognitionActive = false;
-        updateVoiceButton();
-    };
+    speechRecognition.onerror = () => { recognitionActive = false; updateVoiceButton(); };
+    speechRecognition.onend   = () => { recognitionActive = false; updateVoiceButton(); };
 }
 
-/**
- * Toggle voice input
- */
 function toggleVoiceInput() {
     if (!voiceEnabled || !speechRecognition) return;
-    
     if (recognitionActive) {
         speechRecognition.abort();
-        recognitionActive = false;
     } else {
         recognitionActive = true;
         speechRecognition.start();
     }
-    
     updateVoiceButton();
 }
 
-/**
- * Update voice button UI
- */
 function updateVoiceButton() {
-    if (recognitionActive) {
-        app.voiceBtn.classList.add('active');
-        app.voiceBtn.textContent = '🎤🔴';
-    } else {
-        app.voiceBtn.classList.remove('active');
-        app.voiceBtn.textContent = '🎤';
-    }
+    app.voiceBtn.textContent = recognitionActive ? '🎤🔴' : '🎤';
+    app.voiceBtn.classList.toggle('active', recognitionActive);
 }
 
-/**
- * Load local settings
- */
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
 function loadSettings() {
-    app.voiceToggle.checked = voiceEnabled;
+    if (app.voiceToggle) app.voiceToggle.checked = voiceEnabled;
 }
 
-/**
- * Switch tabs in sidebar
- */
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
 function switchTab(tabName) {
-    // Update buttons
-    app.tabBtns.forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tab === tabName);
-    });
-    
-    // Update content
-    app.tabContents.forEach(content => {
-        content.style.display = content.id === `${tabName}-tab` ? 'block' : 'none';
-    });
-    
-    // Load content if needed
-    if (tabName === 'files') {
-        loadFileList('/');
-    }
+    app.tabBtns.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
+    app.tabContents.forEach(c => { c.style.display = c.id === `${tabName}-tab` ? 'block' : 'none'; });
+
+    if (tabName === 'history') loadSessionHistory();
 }
 
-/**
- * Send a message
- */
+// ---------------------------------------------------------------------------
+// Sending messages
+// ---------------------------------------------------------------------------
 async function sendMessage() {
     const message = app.input.value.trim();
-    
-    if (!message || !currentModel) {
-        return;
-    }
-    
-    // Clear input
+    if (!message || !currentModel) return;
+
     app.input.value = '';
     app.input.style.height = 'auto';
-    
-    // Add user message to UI
+
     addUserMessage(message);
-    
-    // Show loading indicator
-    const loadingId = addLoadingMessage();
-    
+
+    const isSlowMode = currentModel.includes('-airllm');
+    const loadingId = addLoadingMessage(isSlowMode);
+
     try {
-        // Connect to WebSocket and stream response
         await streamChatResponse(message, loadingId);
     } catch (error) {
-        console.error('Chat error:', error);
-        updateMessage(loadingId, `Error: ${error.message}`);
+        updateMessage(loadingId, `Error: ${error.message}`, false);
     }
 }
 
-/**
- * Stream chat response via WebSocket
- */
-async function streamChatResponse(message, loadingId) {
-    return new Promise((resolve, reject) => {
-        try {
-            let pendingText = '';
-            let flushTimer = null;
-            let resolved = false;
-            const flushIntervalMs = 50;
+// ---------------------------------------------------------------------------
+// WebSocket streaming with exponential backoff reconnection
+// ---------------------------------------------------------------------------
+function setConnStatus(state) {
+    // state: 'ok' | 'reconnecting' | 'error'
+    app.connStatus.className = `conn-status conn-${state}`;
+    app.connStatus.title = {ok: 'Connected', reconnecting: 'Reconnecting...', error: 'Disconnected'}[state] || '';
+}
 
-            const flushPending = () => {
-                if (!pendingText) {
-                    flushTimer = null;
-                    return;
-                }
-                updateMessage(loadingId, pendingText, true);
-                pendingText = '';
-                flushTimer = null;
-            };
-
-            const scheduleFlush = () => {
-                if (flushTimer) return;
-                flushTimer = setTimeout(flushPending, flushIntervalMs);
-            };
-
-            const finalize = () => {
-                if (resolved) return;
-                resolved = true;
-                if (flushTimer) {
-                    clearTimeout(flushTimer);
-                    flushTimer = null;
-                }
-                flushPending();
-                resolve();
-            };
-
-            // Determine WebSocket protocol
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/chat`;
-            
-            const ws = new WebSocket(wsUrl);
-            
-            ws.onopen = () => {
-                // Send message
-                ws.send(JSON.stringify({
-                    model: currentModel,
-                    message: message,
-                    session_id: currentSessionId,
-                    use_case: localStorage.getItem('useCase') || 'general',
-                }));
-            };
-            
-            ws.onmessage = (event) => {
-                try {
-                    if (event.data === '{"type":"done"}' || event.data.includes('"type":"done"')) {
-                        ws.close();
-                        finalize();
-                    } else {
-                        // Parse JSON or treat as plain text
-                        let text = event.data;
-                        try {
-                            const json = JSON.parse(event.data);
-                            if (json.type === 'error') {
-                                text = `Error: ${json.message}`;
-                            } else if (json.type === 'done') {
-                                ws.close();
-                                finalize();
-                                return;
-                            }
-                        } catch (e) {
-                            // Not JSON, treat as plain text token
-                        }
-
-                        pendingText += text;
-                        scheduleFlush();
-                    }
-                } catch (error) {
-                    console.error('Message parse error:', error);
-                }
-            };
-            
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-                reject(new Error('Connection failed'));
-            };
-            
-            ws.onclose = () => {
-                finalize();
-            };
-            
-        } catch (error) {
-            reject(error);
+async function streamChatResponse(message, loadingId, attempt = 0) {
+    const MAX_ATTEMPTS = 3;
+    try {
+        await _doWebSocketStream(message, loadingId);
+    } catch (err) {
+        if (attempt < MAX_ATTEMPTS - 1) {
+            const delay = 1000 * Math.pow(2, attempt);
+            setConnStatus('reconnecting');
+            updateMessage(loadingId, `⏳ Reconnecting (attempt ${attempt + 2}/${MAX_ATTEMPTS})...`, false);
+            await new Promise(r => setTimeout(r, delay));
+            return streamChatResponse(message, loadingId, attempt + 1);
         }
+        setConnStatus('error');
+        throw err;
+    }
+}
+
+function _doWebSocketStream(message, loadingId) {
+    return new Promise((resolve, reject) => {
+        let pendingText = '';
+        let flushTimer = null;
+        let resolved = false;
+        let firstToken = true;
+
+        const flushPending = () => {
+            if (!pendingText) { flushTimer = null; return; }
+            updateMessage(loadingId, pendingText, true);
+            totalTokensThisSession += pendingText.split(/\s+/).length;
+            pendingText = '';
+            flushTimer = null;
+        };
+
+        const scheduleFlush = () => {
+            if (flushTimer) return;
+            flushTimer = setTimeout(flushPending, 50);
+        };
+
+        const finalize = () => {
+            if (resolved) return;
+            resolved = true;
+            if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+            flushPending();
+            setConnStatus('ok');
+            resolve();
+        };
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const tokenParam = authToken ? `?token=${encodeURIComponent(authToken)}` : '';
+        const wsUrl = `${protocol}//${window.location.host}/ws/chat${tokenParam}`;
+
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            setConnStatus('ok');
+            ws.send(JSON.stringify({
+                model: currentModel,
+                message,
+                session_id: currentSessionId,
+                use_case: localStorage.getItem('useCase') || 'general',
+            }));
+        };
+
+        ws.onmessage = e => {
+            try {
+                // Try parsing as JSON first (done / error signals)
+                let parsed;
+                try { parsed = JSON.parse(e.data); } catch (_) {}
+
+                if (parsed) {
+                    if (parsed.type === 'done') { ws.close(); finalize(); return; }
+                    if (parsed.type === 'error') {
+                        const errText = `Error: ${parsed.message}`;
+                        if (firstToken) { updateMessage(loadingId, errText, false); firstToken = false; }
+                        else { pendingText += errText; scheduleFlush(); }
+                        ws.close(); finalize(); return;
+                    }
+                }
+
+                // Plain text token
+                const text = (parsed && typeof parsed === 'object') ? JSON.stringify(parsed) : e.data;
+                if (firstToken) {
+                    // Replace typing indicator with first real content
+                    updateMessage(loadingId, text, false);
+                    firstToken = false;
+                } else {
+                    pendingText += text;
+                    scheduleFlush();
+                }
+            } catch (err) {
+                console.error('Message parse error:', err);
+            }
+        };
+
+        ws.onerror = () => reject(new Error('WebSocket connection failed'));
+        ws.onclose = () => finalize();
     });
 }
 
-/**
- * Add user message to UI
- */
-function addUserMessage(text) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message user-message';
-    messageDiv.innerHTML = `<div class="message-content">${escapeHtml(text)}</div>`;
-    app.messages.appendChild(messageDiv);
-    scrollToBottom();
-}
+// ---------------------------------------------------------------------------
+// Message rendering — unified through renderMessageContent
+// ---------------------------------------------------------------------------
 
-/**
- * Add assistant message (streaming)
- */
-function addLoadingMessage() {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message assistant-message';
-    messageDiv.id = 'msg-' + Date.now();
-    messageDiv.innerHTML = `<div class="message-content"><span class="typing-indicator">▪ ▪ ▪</span></div>`;
-    app.messages.appendChild(messageDiv);
-    scrollToBottom();
-    return messageDiv.id;
-}
+function renderMessageContent(contentEl, text, append = false) {
+    const raw = append ? (contentEl.dataset.raw || '') + text : text;
+    contentEl.dataset.raw = raw;
 
-/**
- * Update a message with streamed content
- */
-function updateMessage(messageId, text, append = false) {
-    const messageDiv = document.getElementById(messageId);
-    if (!messageDiv) return;
-    
-    const content = messageDiv.querySelector('.message-content');
-    
-    if (append) {
-        content.textContent = (content.textContent || '').replace('▪ ▪ ▪', '') + text;
+    if (window.marked && window.DOMPurify) {
+        contentEl.innerHTML = DOMPurify.sanitize(marked.parse(raw));
     } else {
-        content.textContent = text;
+        contentEl.textContent = raw;
     }
-    
+}
+
+function addUserMessage(text) {
+    const div = document.createElement('div');
+    div.className = 'message user-message';
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.textContent = text;   // user text is always plain
+    div.appendChild(content);
+    app.messages.appendChild(div);
     scrollToBottom();
 }
 
-/**
- * Add system message
- */
+function addLoadingMessage(slowMode = false) {
+    const div = document.createElement('div');
+    div.className = 'message assistant-message';
+    div.id = 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+
+    const content = document.createElement('div');
+    content.className = 'message-content';
+
+    // Typing indicator
+    const indicator = document.createElement('span');
+    indicator.className = 'typing-indicator';
+    for (let i = 0; i < 3; i++) {
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        indicator.appendChild(dot);
+    }
+    if (slowMode) {
+        const label = document.createElement('span');
+        label.className = 'slow-mode-label';
+        label.textContent = ' Thinking… (Slow Mode: 1-3 min)';
+        indicator.appendChild(label);
+    }
+    content.appendChild(indicator);
+
+    // Copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.textContent = '⎘';
+    copyBtn.title = 'Copy to clipboard';
+
+    div.appendChild(content);
+    div.appendChild(copyBtn);
+    app.messages.appendChild(div);
+    scrollToBottom();
+    return div.id;
+}
+
+function updateMessage(messageId, text, append = false) {
+    const div = document.getElementById(messageId);
+    if (!div) return;
+    const content = div.querySelector('.message-content');
+    renderMessageContent(content, text, append);
+    scrollToBottom();
+}
+
+function addAssistantMessage(text) {
+    const id = addLoadingMessage(false);
+    updateMessage(id, text, false);
+    return id;
+}
+
 function addSystemMessage(text) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message system-message';
-    messageDiv.innerHTML = `<div class="message-content">${escapeHtml(text)}</div>`;
-    app.messages.appendChild(messageDiv);
+    const div = document.createElement('div');
+    div.className = 'message system-message';
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.textContent = text;
+    div.appendChild(content);
+    app.messages.appendChild(div);
     scrollToBottom();
 }
 
-/**
- * Create new session
- */
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
 async function createNewSession() {
     try {
-        const response = await fetch('/api/sessions', {
+        const resp = await apiFetch('/api/sessions', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({model_name: currentModel || 'neural-chat'})
+            body: JSON.stringify({model_name: currentModel || 'llama3.2:3b'}),
         });
-        const data = await response.json();
+        const data = await resp.json();
         currentSessionId = data.session_id;
-    } catch (error) {
-        currentSessionId = 'session-' + Date.now();
+    } catch {
+        currentSessionId = 'local-' + Date.now();
     }
     app.messages.innerHTML = '';
-    addSystemMessage(`New session started`);
+    totalTokensThisSession = 0;
+    addSystemMessage('New session started');
 }
 
-/**
- * Load session history
- */
 async function loadSessionHistory() {
+    const listContainer = document.getElementById('history-list');
+    if (!listContainer) return;
+
     try {
-        const response = await fetch('/api/sessions');
-        const data = await response.json();
+        const resp = await apiFetch('/api/sessions');
+        const data = await resp.json();
         const sessions = data.sessions || [];
-        
-        const tabContent = document.querySelector('[data-tab="history"]');
-        if (!tabContent) return;
-        
-        tabContent.innerHTML = '';
-        
+
+        listContainer.innerHTML = '';
+
         if (sessions.length === 0) {
-            tabContent.innerHTML = '<div style="padding: 20px; color: #999;">No session history yet</div>';
+            listContainer.innerHTML = '<div class="placeholder">No session history yet</div>';
             return;
         }
-        
-        const list = document.createElement('div');
+
         sessions.forEach(session => {
             const div = document.createElement('div');
             div.className = 'history-item';
-            div.style.padding = '12px';
-            div.style.borderBottom = '1px solid #333';
-            div.style.cursor = 'pointer';
-            div.style.transition = 'background-color 0.2s';
-            
-            const date = new Date(session.last_accessed).toLocaleString();
-            const summary = session.summary || `${session.model_name}`;
-            
-            div.innerHTML = `
-                <strong>${summary}</strong>
-                <br><small style="color: #999; font-size: 0.85em;">${date}</small>
-            `;
-            
+
+            const title = document.createElement('strong');
+            title.textContent = session.summary || session.model_name || 'Session';
+
+            const meta = document.createElement('small');
+            meta.textContent = new Date(session.last_accessed).toLocaleString();
+
+            div.appendChild(title);
+            div.appendChild(document.createElement('br'));
+            div.appendChild(meta);
+
             div.addEventListener('click', () => loadSession(session.session_id));
-            div.addEventListener('mouseenter', () => div.style.backgroundColor = '#333');
-            div.addEventListener('mouseleave', () => div.style.backgroundColor = 'transparent');
-            list.appendChild(div);
+            listContainer.appendChild(div);
         });
-        
-        tabContent.appendChild(list);
-    } catch (error) {
-        console.error('Failed to load history:', error);
+    } catch (err) {
+        listContainer.innerHTML = '<div class="placeholder">Error loading history</div>';
+        console.error('Failed to load history:', err);
     }
 }
 
-/**
- * Load and resume a session
- */
 async function loadSession(sessionId) {
     try {
-        const response = await fetch(`/api/sessions/${sessionId}`);
-        const data = await response.json();
-        
+        const resp = await apiFetch(`/api/sessions/${sessionId}`);
+        const data = await resp.json();
+
         currentSessionId = sessionId;
         currentModel = data.session.model_name;
         if (app.modelSelector) app.modelSelector.value = currentModel;
+        updateSlowModeBadge();
         app.messages.innerHTML = '';
-        
+
         data.messages.forEach(msg => {
             if (msg.role === 'user') {
                 addUserMessage(msg.content);
-            } else {
+            } else if (msg.role === 'assistant') {
                 addAssistantMessage(msg.content);
             }
         });
-        
-        switchTab('chat');
-    } catch (error) {
-        console.error('Failed to load session:', error);
+
+        switchTab('files'); // switch back to main area
+    } catch (err) {
+        console.error('Failed to load session:', err);
     }
 }
 
-/**
- * Load file list
- */
-async function loadFileList(path) {
-    try {
-        // This would call the filesystem API in Phase 2
-        app.fileList.innerHTML = '<div class="placeholder">File browser coming in Phase 2</div>';
-    } catch (error) {
-        console.error('Failed to load files:', error);
-        app.fileList.innerHTML = '<div class="error">Error loading files</div>';
-    }
-}
-
-/**
- * Update password
- */
+// ---------------------------------------------------------------------------
+// Password update
+// ---------------------------------------------------------------------------
 async function updatePassword() {
     const password = document.getElementById('password-input').value;
-    
-    if (!password) {
-        alert('Please enter a password');
-        return;
-    }
-    
+    if (!password) { alert('Please enter a password'); return; }
     try {
-        // This would update the password in Phase 2
-        alert('Password update coming in Phase 2');
-    } catch (error) {
-        alert('Error updating password: ' + error.message);
+        const resp = await apiFetch('/api/auth/update-password', {
+            method: 'POST',
+            body: JSON.stringify({password}),
+        });
+        if (resp.ok) {
+            alert('Password updated. Please log in again.');
+            authToken = '';
+            localStorage.removeItem('garudaai_token');
+            showLoginOverlay();
+        } else {
+            alert('Failed to update password.');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
     }
 }
 
-/**
- * Utility: Scroll to bottom of messages
- */
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
 function scrollToBottom() {
-    setTimeout(() => {
+    requestAnimationFrame(() => {
         app.messages.scrollTop = app.messages.scrollHeight;
-    }, 0);
+    });
 }
 
-/**
- * Utility: Escape HTML
- */
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+// Configure marked.js if available
+if (window.marked) {
+    marked.setOptions({
+        breaks: true,
+        gfm: true,
+    });
 }
-
-/**
- * Utility: Auto-expand textarea
- */
-app.input.addEventListener('input', (e) => {
-    e.target.style.height = 'auto';
-    e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
-});

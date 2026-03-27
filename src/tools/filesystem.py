@@ -17,7 +17,7 @@ class FilesystemTool:
         Args:
             home_dir: Root directory for filesystem access (default: $HOME)
         """
-        self.home_dir = Path(home_dir).expanduser()
+        self.home_dir = Path(home_dir).expanduser().resolve()
 
     def _validate_path(self, path: str) -> Path:
         """Validate and normalize a path to ensure it's within home_dir.

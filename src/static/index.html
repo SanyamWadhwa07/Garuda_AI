@@ -5,21 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="GarudaAI - Local AI Agent Platform">
     <meta name="theme-color" content="#1a1a1a">
-    
+
     <title>GarudaAI</title>
-    
+
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦅</text></svg>">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+
+    <!-- Login overlay (shown when auth is required) -->
+    <div id="login-overlay" class="login-overlay" style="display:none;">
+        <div class="login-box">
+            <h2>🦅 GarudaAI</h2>
+            <p>Enter password to continue</p>
+            <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+            <button id="login-btn" class="btn-primary">Login</button>
+            <div id="login-error" class="login-error"></div>
+        </div>
+    </div>
+
     <div id="app" class="app-container">
         <!-- Header -->
         <header class="header">
             <div class="header-title">
+                <button id="sidebar-toggle-btn" class="btn-icon sidebar-toggle" title="Toggle sidebar">☰</button>
                 <h1>🦅 GarudaAI</h1>
             </div>
             <div class="header-controls">
+                <span id="slow-mode-badge" class="slow-mode-badge" style="display:none;" title="Layer offloading active — responses take 1-3 min">⚠️ Slow Mode</span>
+                <span id="conn-status" class="conn-status conn-ok" title="Connection status">●</span>
                 <select id="model-selector" class="model-selector">
                     <option value="">Loading models...</option>
                 </select>
@@ -33,19 +48,19 @@
             <div class="column-messages">
                 <!-- Messages Area -->
                 <div id="messages" class="messages-container"></div>
-                
+
                 <!-- Input Area -->
                 <div class="input-area">
-                    <textarea 
-                        id="message-input" 
-                        class="message-input" 
+                    <textarea
+                        id="message-input"
+                        class="message-input"
                         placeholder="Ask me anything..."
                         rows="3"></textarea>
                     <button id="send-btn" class="btn-primary">Send</button>
                 </div>
             </div>
 
-            <!-- Right Sidebar (hidden by default on mobile) -->
+            <!-- Right Sidebar -->
             <aside id="sidebar" class="sidebar">
                 <div class="sidebar-tabs">
                     <button class="tab-btn active" data-tab="files">📁 Files</button>
@@ -59,7 +74,9 @@
                         <div class="breadcrumb">
                             <span id="current-path">/home</span>
                         </div>
-                        <div id="file-list" class="file-list"></div>
+                        <div id="file-list" class="file-list">
+                            <div class="placeholder">File browser coming soon</div>
+                        </div>
                     </div>
                 </div>
 
@@ -81,12 +98,6 @@
                             </label>
                         </div>
                         <div class="setting">
-                            <label>
-                                <input type="checkbox" id="file-browser-toggle" checked>
-                                File Browser
-                            </label>
-                        </div>
-                        <div class="setting">
                             <label for="history-limit">Keep Last:</label>
                             <input type="number" id="history-limit" min="1" max="100" value="50">
                             messages
@@ -98,7 +109,7 @@
         </main>
     </div>
 
-    <!-- Modal for settings -->
+    <!-- Settings Modal -->
     <div id="settings-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -107,7 +118,7 @@
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <label for="password-input">Set Password:</label>
+                    <label for="password-input">Change Password:</label>
                     <input type="password" id="password-input" placeholder="Leave empty to skip">
                     <button id="password-btn" class="btn-small">Update Password</button>
                 </div>
@@ -115,6 +126,8 @@
         </div>
     </div>
 
+    <script src="/marked.min.js"></script>
+    <script src="/purify.min.js"></script>
     <script src="/sw-register.js"></script>
     <script src="/script.js"></script>
 </body>
