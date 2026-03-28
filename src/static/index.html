@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="GarudaAI - Local AI Agent Platform">
-    <meta name="theme-color" content="#1a1f3a">
+    <meta name="theme-color" content="#0d0d0d">
 
     <!-- iOS PWA -->
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -39,18 +39,18 @@
         <!-- Header -->
         <header class="header">
             <div class="header-left">
-                <button id="sidebar-toggle-btn" class="btn-icon sidebar-toggle" title="Toggle sidebar">☰</button>
+                <button id="sidebar-toggle-btn" class="btn-icon sidebar-toggle" title="Menu">☰</button>
                 <h1>🦅 GarudaAI</h1>
             </div>
             <div class="header-right">
                 <span id="slow-mode-badge" class="slow-mode-badge" style="display:none;"
-                      title="Layer offloading active — responses take 1-3 min">⚠️ Slow</span>
+                      title="Layer offloading — responses take 1-3 min">⚠ Slow</span>
                 <span id="conn-status" class="conn-status conn-ok" title="Connection status">●</span>
                 <button id="settings-btn" class="btn-icon" title="Settings">⚙️</button>
             </div>
         </header>
 
-        <!-- Model selector row (full width on mobile) -->
+        <!-- Model selector row -->
         <div class="model-bar">
             <select id="model-selector" class="model-selector">
                 <option value="">Loading models...</option>
@@ -66,26 +66,38 @@
 
                 <!-- Input Area -->
                 <div class="input-area">
-                    <textarea
-                        id="message-input"
-                        class="message-input"
-                        placeholder="Ask me anything..."
-                        rows="1"
-                        enterkeyhint="send"
-                        autocorrect="off"
-                        autocapitalize="sentences"></textarea>
-                    <button id="send-btn" class="btn-send" title="Send">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-                            <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
-                        </svg>
-                    </button>
+                    <!-- Image preview (shown when photo attached) -->
+                    <div id="image-preview-area" class="image-preview-area" style="display:none;">
+                        <img id="preview-img" alt="Attached image">
+                        <button id="remove-img-btn" class="remove-img-btn" title="Remove image">✕</button>
+                    </div>
+
+                    <!-- Pill-shaped input wrap -->
+                    <div class="input-wrap">
+                        <textarea
+                            id="message-input"
+                            class="message-input"
+                            placeholder="Ask me anything..."
+                            rows="1"
+                            enterkeyhint="send"
+                            autocorrect="off"
+                            autocapitalize="sentences"></textarea>
+                        <div class="input-actions">
+                            <button id="camera-btn" class="btn-input-icon" title="Attach photo">📷</button>
+                            <button id="send-btn" class="btn-send" title="Send">
+                                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                                    <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <!-- Right Sidebar -->
             <aside id="sidebar" class="sidebar">
                 <div class="sidebar-header">
-                    <span>Menu</span>
+                    <span>🦅 GarudaAI</span>
                     <button id="sidebar-close-btn" class="btn-icon">✕</button>
                 </div>
                 <div class="sidebar-tabs">
@@ -98,31 +110,82 @@
                     <div class="history-container">
                         <button id="new-session-btn" class="btn-small">+ New Chat</button>
                         <div id="history-list" class="history-list"></div>
+                        <div class="history-footer">
+                            <button id="export-btn" class="btn-small">⬇ Export MD</button>
+                        </div>
                     </div>
                 </div>
 
                 <!-- Settings -->
                 <div id="settings-tab" class="tab-content">
                     <div class="settings-container">
-                        <div class="setting">
-                            <label>
-                                <input type="checkbox" id="voice-toggle" checked>
-                                Voice Input
-                            </label>
+
+                        <!-- Persona -->
+                        <div class="settings-section">
+                            <h3>🧠 Persona (SOUL.md)</h3>
+                            <div class="setting">
+                                <textarea id="soul-textarea" placeholder="Describe your AI's personality, your preferences, and facts to remember..."></textarea>
+                                <button id="soul-save-btn" class="btn-small">Save Persona</button>
+                            </div>
                         </div>
-                        <div class="setting">
-                            <label for="history-limit">Keep last:</label>
-                            <input type="number" id="history-limit" min="1" max="100" value="50">
-                            messages
+
+                        <hr class="settings-divider">
+
+                        <!-- Documents (RAG) -->
+                        <div class="settings-section">
+                            <h3>📚 Documents (RAG)</h3>
+                            <div class="setting">
+                                <label class="btn-small" for="rag-file-input" style="cursor:pointer; text-align:center;">
+                                    ＋ Upload file
+                                </label>
+                                <input type="file" id="rag-file-input" accept=".pdf,.txt,.md,.py,.js,.ts,.json,.csv" style="display:none;">
+                                <div id="rag-status" style="font-size:0.8rem; color:var(--text-muted);"></div>
+                                <div id="rag-doc-list" class="rag-doc-list"></div>
+                            </div>
                         </div>
-                        <hr style="border-color: var(--border); margin: 0.5rem 0;">
-                        <div class="setting">
-                            <label for="password-input">Change Password</label>
-                            <input type="password" id="password-input" placeholder="New password"
-                                   autocomplete="new-password">
-                            <button id="password-btn" class="btn-small">Update</button>
+
+                        <hr class="settings-divider">
+
+                        <!-- Voice -->
+                        <div class="settings-section">
+                            <h3>🎤 Voice</h3>
+                            <div class="setting">
+                                <label>
+                                    <input type="checkbox" id="voice-toggle" checked>
+                                    Enable voice input
+                                </label>
+                                <label>
+                                    <input type="checkbox" id="tts-toggle">
+                                    Read responses aloud (TTS)
+                                </label>
+                            </div>
                         </div>
-                        <button id="reset-btn" class="btn-small danger">Reset Settings</button>
+
+                        <hr class="settings-divider">
+
+                        <!-- General -->
+                        <div class="settings-section">
+                            <h3>⚙️ General</h3>
+                            <div class="setting">
+                                <label for="history-limit">Keep last:</label>
+                                <input type="number" id="history-limit" min="1" max="100" value="50">
+                                <span style="font-size:0.8rem; color:var(--text-muted);">messages per session</span>
+                            </div>
+                        </div>
+
+                        <hr class="settings-divider">
+
+                        <!-- Security -->
+                        <div class="settings-section">
+                            <h3>🔒 Security</h3>
+                            <div class="setting">
+                                <input type="password" id="password-input" placeholder="New password"
+                                       autocomplete="new-password">
+                                <button id="password-btn" class="btn-small">Update Password</button>
+                            </div>
+                            <button id="reset-btn" class="btn-small danger">Reset All Settings</button>
+                        </div>
+
                     </div>
                 </div>
             </aside>

@@ -61,15 +61,15 @@ def save_config(config: dict):
 
 def hash_password(password: str) -> str:
     """Hash a password with bcrypt."""
-    from passlib.hash import bcrypt
-    return bcrypt.hash(password)
+    import bcrypt
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     """Verify a plain password against a bcrypt hash."""
-    from passlib.hash import bcrypt
+    import bcrypt
     try:
-        return bcrypt.verify(plain, hashed)
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
     except Exception:
         return False
 
@@ -156,11 +156,22 @@ def detect(output_json: bool):
 @click.option("--prefer-smaller/--prefer-larger", default=True, help="Prefer smaller/faster models when recommending")
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")
 def suggest(use_case: Optional[str], prefer_smaller: bool, output_json: bool):
-    """Suggest models based on hardware."""
-    click.echo(style("Detecting hardware and analyzing models...", fg="cyan"))
+    """Suggest models based on hardware (runs a live inference benchmark)."""
+    click.echo(style("Detecting hardware...", fg="cyan"))
 
     hardware = detect_hardware()
     vram_mb = hardware.get("vram_mb", 0)
+
+    # Run live benchmark if Ollama is reachable
+    from .hardware import benchmark_inference
+    measured_tps: Optional[float] = None
+    click.echo(style("Running 10-second inference benchmark...", fg="cyan"))
+    bench = benchmark_inference()
+    if bench.get("tokens_per_sec", 0) > 0:
+        measured_tps = bench["tokens_per_sec"]
+        click.echo(style(f"  Measured: {measured_tps} tok/s (model: {bench['model']})", fg="green"))
+    else:
+        click.echo(style(f"  Benchmark skipped: {bench.get('error', 'Ollama not running')}", fg="yellow"))
 
     suggester = ModelSuggester()
     suggestion = suggester.suggest(
@@ -172,6 +183,8 @@ def suggest(use_case: Optional[str], prefer_smaller: bool, output_json: bool):
     )
 
     if output_json:
+        if measured_tps is not None:
+            suggestion["measured_tps"] = measured_tps
         click.echo(json.dumps(suggestion, indent=2))
     else:
         click.echo(f"\n{style('Model Recommendation:', bold=True)}")
@@ -284,8 +297,19 @@ def setup(password: Optional[str], no_password: bool, port: int, prefer_smaller:
 
     click.echo()
 
+    # Full access mode
+    click.echo(style("Step 5: Access permissions...", fg="cyan"))
+    click.echo("  Full access lets the AI read any file and run any shell command on your system.")
+    click.echo("  Without it, file access is limited to your home directory and shell commands are whitelisted.")
+    full_access = click.confirm("  Enable full system access?", default=False)
+    if full_access:
+        click.echo("  ✓ Full access enabled — AI can read all files and run any command")
+    else:
+        click.echo("  ✓ Sandboxed mode — home directory only, whitelisted commands")
+    click.echo()
+
     # Save config
-    click.echo(style("Step 5: Saving configuration...", fg="cyan"))
+    click.echo(style("Step 6: Saving configuration...", fg="cyan"))
     ensure_config_dir()
 
     config = {
@@ -310,6 +334,7 @@ def setup(password: Optional[str], no_password: bool, port: int, prefer_smaller:
         "tools": {
             "filesystem_enabled": True,
             "shell_enabled": True,
+            "full_access": full_access,
         },
         "features": {
             "voice_input": True,

@@ -25,7 +25,20 @@
       "Bash(curl -sk -o /dev/null -w \"%{http_code}\" https://localhost:8000/)",
       "Bash(python -m pip install -e . -q)",
       "Bash(garudaai --help)",
-      "Bash(bash -n d:/GarudaAI/install.sh)"
+      "Bash(bash -n d:/GarudaAI/install.sh)",
+      "Bash(grep -n \"clipboard\\\\|git_tool\\\\|git.py\\\\|APScheduler\\\\|rag\\\\|RAG\\\\|permission\\\\|template\" /d/GarudaAI/src/tools/*.py)",
+      "Bash(ls -la /d/GarudaAI/src/static/*.js)",
+      "Bash(ls -la /d/GarudaAI/src/airllm*)",
+      "Bash(ls -lah /d/GarudaAI/src/tools/*.py)",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pytest tests/ -q --ignore=tests/test_filesystem.py)",
+      "Read(//c/Users/ASUS/.config/garudaai/**)",
+      "Bash(python -c \"import bcrypt; h = b''$2b$12$E0hj2xEUo3Fl63BSVEtljOtIeMjD/yYSb4tJ4LaYWfDSBae2XUp/q''; print\\(bcrypt.checkpw\\(b''swadhwa07'', h\\)\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import bcrypt; print\\(bcrypt.hashpw\\(b''swadhwa07'', bcrypt.gensalt\\(\\)\\).decode\\(\\)\\)\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\ASUS\\.config\\garudaai"
     ]
   }
 }

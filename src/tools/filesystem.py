@@ -9,31 +9,30 @@ from typing import List, Dict, Optional, Any
 
 
 class FilesystemTool:
-    """Sandboxed filesystem access."""
+    """Filesystem access — sandboxed to home dir by default, or full system if full_access=True."""
 
-    def __init__(self, home_dir: str = "~"):
+    def __init__(self, home_dir: str = "~", full_access: bool = False):
         """Initialize filesystem tool.
-        
+
         Args:
-            home_dir: Root directory for filesystem access (default: $HOME)
+            home_dir: Root directory for sandboxed access (default: $HOME)
+            full_access: If True, disable sandbox — AI can read any path on the system
         """
-        self.home_dir = Path(home_dir).expanduser().resolve()
+        self.full_access = full_access
+        if full_access:
+            import sys
+            # Use filesystem root so relative_to() always succeeds
+            self.home_dir = Path("C:\\") if sys.platform == "win32" else Path("/")
+        else:
+            self.home_dir = Path(home_dir).expanduser().resolve()
 
     def _validate_path(self, path: str) -> Path:
-        """Validate and normalize a path to ensure it's within home_dir.
-        
-        Args:
-            path: Path to validate
-            
-        Returns:
-            Resolved Path object
-            
-        Raises:
-            ValueError: If path is outside home_dir or contains symlinks outside home_dir
-        """
+        """Resolve a path. In full_access mode any path is allowed; otherwise must be under home_dir."""
         requested = Path(path).expanduser().resolve()
 
-        # Check if path is within home_dir
+        if self.full_access:
+            return requested
+
         try:
             requested.relative_to(self.home_dir)
         except ValueError:

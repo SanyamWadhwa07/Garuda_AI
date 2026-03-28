@@ -17,31 +17,33 @@ class ShellTool:
         "uptime", "free", "df", "which", "type",
     }
 
-    def __init__(self, whitelist: Optional[List[str]] = None, timeout_seconds: int = 30):
+    def __init__(self, whitelist: Optional[List[str]] = None, timeout_seconds: int = 30, full_access: bool = False):
         """Initialize shell tool.
-        
+
         Args:
             whitelist: List of allowed commands (default: safe set)
             timeout_seconds: Max time to run a command
+            full_access: If True, disable whitelist — any command can run
         """
         self.whitelist = set(whitelist or self.DEFAULT_WHITELIST)
         self.timeout_seconds = timeout_seconds
+        self.full_access = full_access
 
     def execute(self, command: str, *args) -> Dict[str, Any]:
         """Execute a shell command safely.
-        
+
         Args:
-            command: First part of command (must be whitelisted)
+            command: First part of command (must be whitelisted unless full_access)
             *args: Arguments to pass
-            
+
         Returns:
             Dict with stdout, stderr, returncode, execution_time_ms
-            
+
         Raises:
-            ValueError: If command not in whitelist
+            ValueError: If command not in whitelist and full_access is False
         """
-        # Check if command is whitelisted
-        if command not in self.whitelist:
+        # Check if command is whitelisted (skip in full_access mode)
+        if not self.full_access and command not in self.whitelist:
             raise ValueError(f"Command not allowed: {command}")
 
         full_command = [command] + list(args)

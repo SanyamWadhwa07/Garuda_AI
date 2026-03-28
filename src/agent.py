@@ -5,11 +5,13 @@ High-performance local AI agent with streaming, session management, tools, and a
 
 import asyncio
 import json
+import os
 import re
 import secrets
 import shlex
 import sqlite3
 import logging
+import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -22,8 +24,8 @@ import httpx
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, WebSocket, HTTPException, Depends, Request, UploadFile, File
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -38,6 +40,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _CONFIG_FILE = Path("~/.config/garudaai/config.toml").expanduser()
 _config: Dict[str, Any] = {}
+
+
+_SOUL_FILE = Path("~/.config/garudaai/SOUL.md").expanduser()
+_DATA_DIR = Path("~/.local/share/garudaai").expanduser()
+_soul_cache: Dict[str, Any] = {"content": "", "loaded_at": 0.0}
+_SOUL_CACHE_TTL = 60.0  # seconds
+
+
+def _load_soul() -> str:
+    """Load SOUL.md persona file with a 60-second cache."""
+    now = time.monotonic()
+    if now - _soul_cache["loaded_at"] < _SOUL_CACHE_TTL:
+        return _soul_cache["content"]
+    content = _SOUL_FILE.read_text(errors="ignore")[:2000] if _SOUL_FILE.exists() else ""
+    _soul_cache["content"] = content
+    _soul_cache["loaded_at"] = now
+    return content
 
 
 def _load_config() -> Dict[str, Any]:
@@ -255,13 +274,25 @@ class Agent:
         ollama_url: str = "http://localhost:11434",
         session_manager: Optional[SessionManager] = None,
         home_dir: str = "~",
+        full_access: bool = False,
     ):
         self.ollama_url = ollama_url
         self.session_manager = session_manager or SessionManager()
-        self.filesystem = FilesystemTool(home_dir)
-        self.shell = ShellTool()
+        self.filesystem = FilesystemTool(home_dir, full_access=full_access)
+        self.shell = ShellTool(full_access=full_access)
         self.system_control = SystemControlTool()
         self.home_dir = home_dir
+        self._rag: Optional[Any] = None
+
+    def _get_rag(self) -> Any:
+        """Lazy-load RAGTool (requires chromadb optional dep)."""
+        if self._rag is None:
+            try:
+                from .tools.rag_tool import RAGTool
+                self._rag = RAGTool()
+            except ImportError:
+                raise RuntimeError("RAG not available. Install with: pip install garudaai[rag]")
+        return self._rag
 
     def build_system_prompt(self, model_name: str, use_case: str = "general") -> str:
         base = (
@@ -276,8 +307,10 @@ class Agent:
             "[tool: system_control, processes]\n"
             "[tool: system_control, lock_screen]\n"
             "[tool: system_control, open_url, https://example.com]\n"
+            "[tool: rag, what does the document say about X?]\n"
             "For quoted arguments with spaces: [tool: filesystem_read, \"/path/with spaces/file.txt\"]\n"
             "The system_control tool lets you control the host machine remotely (screenshot, volume, power, etc).\n"
+            "The rag tool searches your ingested documents. Use it when asked about uploaded files or documents.\n"
             "Never invent tool output. The system will provide real results and call you again."
         )
         extras = {
@@ -285,7 +318,12 @@ class Agent:
             "research": "\n\nYou are a research assistant. Help find, analyze, and summarize information.",
             "writing": "\n\nYou are a writing assistant. Help with drafting, editing, and improving text.",
         }
-        return base + extras.get(use_case, "")
+        prompt = base + extras.get(use_case, "")
+        # Prepend SOUL.md persona if it exists
+        soul = _load_soul()
+        if soul:
+            prompt = soul + "\n\n---\n\n" + prompt
+        return prompt
 
     def parse_tool_calls(self, text: str) -> List[Dict[str, Any]]:
         """Parse [tool: name, arg1, arg2] calls from text using shlex for robust arg splitting."""
@@ -385,6 +423,13 @@ class Agent:
                 result_copy = {k: v for k, v in result.items() if k != "success"}
                 return f"system_control result:\n{json.dumps(result_copy, indent=2)}"
 
+            elif tool_name == "rag":
+                if not args:
+                    return "Error: rag tool requires a question"
+                question = " ".join(args)
+                rag = self._get_rag()
+                return await asyncio.to_thread(rag.query, question)
+
             else:
                 return f"Error: Unknown tool '{tool_name}'"
 
@@ -397,6 +442,7 @@ class Agent:
         user_message: str,
         session_id: Optional[str] = None,
         use_case: str = "general",
+        image_b64: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream a chat response. Supports multi-step tool feedback loop (max 3 iterations)."""
         if not session_id:
@@ -408,6 +454,10 @@ class Agent:
         system_prompt = self.build_system_prompt(model_name, use_case)
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
+        # Attach image to the last user message if provided
+        if image_b64 and messages:
+            messages[-1] = dict(messages[-1])
+            messages[-1]["images"] = [image_b64]
 
         # Check if this is an AirLLM model
         try:
@@ -519,7 +569,8 @@ async def lifespan(app: FastAPI):
     _config = _load_config()
     ollama_url = _config.get("models", {}).get("ollama_url", "http://localhost:11434")
     home_dir = _config.get("paths", {}).get("home_dir", "~")
-    agent = Agent(ollama_url=ollama_url, home_dir=home_dir)
+    full_access = _config.get("tools", {}).get("full_access", False)
+    agent = Agent(ollama_url=ollama_url, home_dir=home_dir, full_access=full_access)
     yield
 
 
@@ -558,8 +609,8 @@ async def login(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     try:
-        from passlib.hash import bcrypt
-        valid = bcrypt.verify(password, password_hash)
+        import bcrypt as _bcrypt
+        valid = _bcrypt.checkpw(password.encode(), password_hash.encode())
     except Exception:
         valid = False
 
@@ -582,8 +633,8 @@ async def update_password(request: Request):
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
 
     try:
-        from passlib.hash import bcrypt as _bcrypt
-        new_hash = _bcrypt.hash(new_password)
+        import bcrypt as _bcrypt
+        new_hash = _bcrypt.hashpw(new_password.encode(), _bcrypt.gensalt()).decode()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to hash password: {e}")
 
@@ -679,13 +730,17 @@ async def websocket_chat(websocket: WebSocket, token: Optional[str] = None):
         user_message = data.get("message", "")
         session_id = data.get("session_id")
         use_case = data.get("use_case", "general")
+        image_b64 = data.get("image")  # optional base64 image for vision models
 
         buffer = []
         last_flush = time.monotonic()
         flush_interval = 0.05
+        stream_start = time.monotonic()
+        char_count = 0
 
-        async for token_text in agent.stream_chat(model_name, user_message, session_id, use_case):
+        async for token_text in agent.stream_chat(model_name, user_message, session_id, use_case, image_b64):
             buffer.append(token_text)
+            char_count += len(token_text)
             now = time.monotonic()
             if now - last_flush >= flush_interval:
                 await websocket.send_text("".join(buffer))
@@ -695,7 +750,10 @@ async def websocket_chat(websocket: WebSocket, token: Optional[str] = None):
         if buffer:
             await websocket.send_text("".join(buffer))
 
-        await websocket.send_json({"type": "done"})
+        elapsed = time.monotonic() - stream_start
+        approx_tokens = max(1, char_count // 4)
+        tps = round(approx_tokens / elapsed, 1) if elapsed > 0.1 else 0
+        await websocket.send_json({"type": "done", "stats": {"tokens": approx_tokens, "tps": tps}})
 
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
@@ -707,6 +765,166 @@ async def websocket_chat(websocket: WebSocket, token: Optional[str] = None):
         try:
             await websocket.close()
         except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# SOUL.md persona endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/soul", dependencies=[Depends(require_auth)])
+async def get_soul():
+    """Return current SOUL.md content."""
+    content = _SOUL_FILE.read_text(errors="ignore") if _SOUL_FILE.exists() else ""
+    return {"content": content}
+
+
+@app.post("/api/soul", dependencies=[Depends(require_auth)])
+async def save_soul(request: Request):
+    """Save SOUL.md content and invalidate cache."""
+    try:
+        body = await request.json()
+        content = body.get("content", "")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    _SOUL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SOUL_FILE.write_text(content, encoding="utf-8")
+    # Invalidate cache
+    _soul_cache["loaded_at"] = 0.0
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# RAG endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/api/rag/upload", dependencies=[Depends(require_auth)])
+async def rag_upload(file: UploadFile = File(...)):
+    """Ingest a document into the RAG vector store."""
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    upload_dir = _DATA_DIR / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    dest = upload_dir / (file.filename or "upload.bin")
+    dest.write_bytes(await file.read())
+    try:
+        rag = agent._get_rag()
+        result = await asyncio.to_thread(rag.ingest, dest)
+        return {"message": result}
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+
+
+@app.get("/api/rag/documents", dependencies=[Depends(require_auth)])
+async def rag_list_documents():
+    """List documents in the RAG store."""
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    try:
+        rag = agent._get_rag()
+        sources = await asyncio.to_thread(rag.list_sources)
+        return {"sources": sources}
+    except RuntimeError:
+        return {"sources": []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Voice I/O endpoints
+# ---------------------------------------------------------------------------
+
+# Lazy-loaded Whisper model (faster-whisper)
+_whisper_model: Optional[Any] = None
+
+
+def _get_whisper():
+    global _whisper_model
+    if _whisper_model is None:
+        try:
+            from faster_whisper import WhisperModel
+            _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+        except ImportError:
+            raise RuntimeError("faster-whisper not installed. Run: pip install garudaai[voice]")
+    return _whisper_model
+
+
+@app.post("/api/transcribe", dependencies=[Depends(require_auth)])
+async def transcribe_audio(audio: UploadFile = File(...)):
+    """Transcribe uploaded audio to text using faster-whisper (local, no cloud)."""
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+        f.write(await audio.read())
+        tmp_path = f.name
+    try:
+        def _run_whisper():
+            model = _get_whisper()
+            segments, _ = model.transcribe(tmp_path, beam_size=1)
+            return " ".join(s.text for s in segments).strip()
+        text = await asyncio.to_thread(_run_whisper)
+        return {"text": text}
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@app.post("/api/speak", dependencies=[Depends(require_auth)])
+async def speak_text(request: Request):
+    """Convert text to speech using Piper TTS (local, no cloud). Returns WAV audio."""
+    try:
+        body = await request.json()
+        text = str(body.get("text", ""))[:500]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Empty text")
+
+    # Find piper binary
+    piper_dir = _DATA_DIR / "piper"
+    import sys
+    piper_bin = (piper_dir / ("piper.exe" if sys.platform == "win32" else "piper"))
+    if not piper_bin.exists():
+        # Try system PATH
+        import shutil
+        found = shutil.which("piper")
+        if not found:
+            raise HTTPException(status_code=501, detail="Piper TTS not installed. Run: garudaai setup")
+        piper_bin = Path(found)
+
+    tts_model = _config.get("voice", {}).get("tts_model", "en_US-lessac-medium")
+    tts_model_path = piper_dir / f"{tts_model}.onnx"
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        wav_path = f.name
+
+    try:
+        import subprocess
+        cmd = [str(piper_bin), "--output_file", wav_path]
+        if tts_model_path.exists():
+            cmd += ["--model", str(tts_model_path)]
+        proc = await asyncio.to_thread(
+            subprocess.run, cmd,
+            input=text.encode("utf-8"),
+            capture_output=True, timeout=30, shell=False,
+        )
+        if proc.returncode != 0:
+            raise HTTPException(status_code=500, detail="Piper TTS failed: " + proc.stderr.decode(errors="replace")[:200])
+        wav_bytes = Path(wav_path).read_bytes()
+        return Response(content=wav_bytes, media_type="audio/wav")
+    except FileNotFoundError:
+        raise HTTPException(status_code=501, detail="Piper TTS binary not found")
+    finally:
+        try:
+            os.unlink(wav_path)
+        except OSError:
             pass
 
 
@@ -736,6 +954,8 @@ def run_agent(
         ],
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Suppress noisy Windows asyncio socket-close errors (WinError 10054)
+    logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
     uvicorn.run(
         "src.agent:app",

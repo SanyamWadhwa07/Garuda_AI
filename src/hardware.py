@@ -320,6 +320,51 @@ def detect_hardware(force_refresh: bool = False) -> Dict[str, Any]:
     return detector.detect(force_refresh=force_refresh)
 
 
+def benchmark_inference(
+    model_name: str = "gemma2:2b",
+    prompt: str = "Hello, how are you?",
+    num_tokens: int = 20,
+    ollama_url: str = "http://localhost:11434",
+) -> Dict[str, Any]:
+    """Run a quick inference benchmark to measure real tokens/sec.
+
+    Completes in 5-30 seconds depending on hardware.
+    Returns {"tokens_per_sec": float, "model": str, "elapsed": float}
+    or {"tokens_per_sec": 0, "model": str, "error": str} on failure.
+    """
+    import urllib.request
+    import urllib.error
+
+    payload = json.dumps({
+        "model": model_name,
+        "prompt": prompt,
+        "options": {"num_predict": num_tokens},
+        "stream": False,
+    }).encode()
+
+    t0 = time.monotonic()
+    try:
+        req = urllib.request.Request(
+            f"{ollama_url}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode())
+        elapsed = time.monotonic() - t0
+        tokens_generated = result.get("eval_count", num_tokens)
+        tps = tokens_generated / elapsed if elapsed > 0 else 0
+        return {
+            "tokens_per_sec": round(tps, 1),
+            "model": model_name,
+            "elapsed": round(elapsed, 2),
+            "tokens": tokens_generated,
+        }
+    except Exception as e:
+        return {"tokens_per_sec": 0, "model": model_name, "error": str(e)}
+
+
 def is_airllm_eligible(hw: Dict[str, Any]) -> Dict[str, Any]:
     """Check if hardware is eligible to run AirLLM (layer-offloaded big models).
 

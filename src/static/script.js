@@ -1,6 +1,7 @@
 /**
  * GarudaAI Frontend
- * Mobile-first chat interface with WebSocket streaming, markdown, auth, sessions.
+ * Mobile-first chat interface with WebSocket streaming, markdown, auth, sessions,
+ * camera vision, SOUL.md persona, RAG documents, TTS, STT, export.
  */
 
 // ---------------------------------------------------------------------------
@@ -9,10 +10,12 @@
 let currentModel = null;
 let currentSessionId = null;
 let voiceEnabled = localStorage.getItem('voiceEnabled') !== 'false';
+let ttsEnabled = localStorage.getItem('ttsEnabled') === 'true';
 let recognitionActive = false;
 let speechRecognition = null;
 let authToken = localStorage.getItem('garudaai_token') || '';
-let totalTokensThisSession = 0;
+let pendingImage = null;  // base64 image from camera
+
 const isMobile = () => window.innerWidth <= 768 || 'ontouchstart' in window;
 
 // ---------------------------------------------------------------------------
@@ -29,6 +32,7 @@ const app = {
     sidebarBackdrop: document.getElementById('sidebar-backdrop'),
     clearHistoryBtn: document.getElementById('new-session-btn'),
     voiceToggle:     document.getElementById('voice-toggle'),
+    ttsToggle:       document.getElementById('tts-toggle'),
     passwordBtn:     document.getElementById('password-btn'),
     tabBtns:         document.querySelectorAll('.tab-btn'),
     tabContents:     document.querySelectorAll('.tab-content'),
@@ -40,6 +44,16 @@ const app = {
     loginPassword:   document.getElementById('login-password'),
     loginBtn:        document.getElementById('login-btn'),
     loginError:      document.getElementById('login-error'),
+    cameraBtn:       document.getElementById('camera-btn'),
+    imagePreviewArea:document.getElementById('image-preview-area'),
+    previewImg:      document.getElementById('preview-img'),
+    removeImgBtn:    document.getElementById('remove-img-btn'),
+    soulTextarea:    document.getElementById('soul-textarea'),
+    soulSaveBtn:     document.getElementById('soul-save-btn'),
+    ragFileInput:    document.getElementById('rag-file-input'),
+    ragStatus:       document.getElementById('rag-status'),
+    ragDocList:      document.getElementById('rag-doc-list'),
+    exportBtn:       document.getElementById('export-btn'),
 };
 
 // ---------------------------------------------------------------------------
@@ -59,16 +73,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function finishInit() {
     setupEventListeners();
     setupVisualViewport();
-
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        setupSpeechRecognition();
-    } else {
-        if (app.voiceBtn) { app.voiceBtn.disabled = true; app.voiceBtn.title = 'Voice not supported'; }
-    }
-
+    setupSpeechRecognition();
     await createNewSession();
     const hint = isMobile() ? 'Tap Send to chat.' : 'Press Enter or click Send to chat.';
     addSystemMessage(`Welcome to GarudaAI! ${hint}`);
+    loadSoul();
+    loadRagDocs();
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +88,6 @@ function setupVisualViewport() {
     if (!window.visualViewport) return;
     const container = document.querySelector('.app-container');
     const onResize = () => {
-        // On mobile, shrink the app container to the visible viewport
         if (isMobile()) {
             container.style.height = window.visualViewport.height + 'px';
         } else {
@@ -212,7 +221,6 @@ function updateSlowModeBadge() {
 function openSidebar() {
     app.sidebar.classList.add('sidebar-open');
     app.sidebarBackdrop.classList.add('active');
-    // Load history when sidebar opens
     loadSessionHistory();
 }
 
@@ -235,7 +243,6 @@ function toggleSidebar() {
 function setupEventListeners() {
     app.sendBtn.addEventListener('click', sendMessage);
 
-    // Desktop: Enter sends. Mobile: Enter adds newline (let user tap Send button)
     app.input.addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.shiftKey && !isMobile()) {
             e.preventDefault();
@@ -243,10 +250,9 @@ function setupEventListeners() {
         }
     });
 
-    // Auto-expand textarea
     app.input.addEventListener('input', () => {
         app.input.style.height = 'auto';
-        app.input.style.height = Math.min(app.input.scrollHeight, 140) + 'px';
+        app.input.style.height = Math.min(app.input.scrollHeight, 130) + 'px';
     });
 
     app.modelSelector.addEventListener('change', e => {
@@ -275,12 +281,26 @@ function setupEventListeners() {
         });
     }
 
+    if (app.ttsToggle) {
+        app.ttsToggle.addEventListener('change', e => {
+            ttsEnabled = e.target.checked;
+            localStorage.setItem('ttsEnabled', ttsEnabled ? 'true' : 'false');
+        });
+    }
+
     if (app.passwordBtn) app.passwordBtn.addEventListener('click', updatePassword);
 
-    // Sidebar open/close
     if (app.sidebarToggle) app.sidebarToggle.addEventListener('click', toggleSidebar);
     if (app.sidebarClose)  app.sidebarClose.addEventListener('click', closeSidebar);
     if (app.sidebarBackdrop) app.sidebarBackdrop.addEventListener('click', closeSidebar);
+
+    // Settings button opens sidebar to settings tab
+    if (app.settingsBtn) {
+        app.settingsBtn.addEventListener('click', () => {
+            openSidebar();
+            switchTab('settings');
+        });
+    }
 
     // Copy button delegation
     app.messages.addEventListener('click', e => {
@@ -302,7 +322,20 @@ function setupEventListeners() {
         app.loginPassword.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
     }
 
-    // Keyboard shortcuts (desktop only)
+    // Camera
+    if (app.cameraBtn) app.cameraBtn.addEventListener('click', captureFromCamera);
+    if (app.removeImgBtn) app.removeImgBtn.addEventListener('click', removeImage);
+
+    // SOUL.md
+    if (app.soulSaveBtn) app.soulSaveBtn.addEventListener('click', saveSoul);
+
+    // RAG upload
+    if (app.ragFileInput) app.ragFileInput.addEventListener('change', handleRagUpload);
+
+    // Export
+    if (app.exportBtn) app.exportBtn.addEventListener('click', exportConversation);
+
+    // Keyboard shortcuts (desktop)
     document.addEventListener('keydown', e => {
         if (e.ctrlKey && e.key === '/') { e.preventDefault(); app.input.focus(); }
         if (e.key === 'Escape') closeSidebar();
@@ -310,17 +343,20 @@ function setupEventListeners() {
 }
 
 // ---------------------------------------------------------------------------
-// Speech Recognition
+// Speech Recognition (browser-side STT — fallback)
 // ---------------------------------------------------------------------------
 function setupSpeechRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+        if (app.voiceBtn) { app.voiceBtn.title = 'Voice input (hold to record)'; }
+        return;
+    }
     speechRecognition = new SR();
     speechRecognition.continuous = false;
     speechRecognition.interimResults = false;
     speechRecognition.lang = 'en-US';
     speechRecognition.onresult = e => {
         app.input.value = Array.from(e.results).map(r => r[0].transcript).join('');
-        // Trigger resize
         app.input.dispatchEvent(new Event('input'));
         recognitionActive = false;
         updateVoiceButton();
@@ -330,16 +366,236 @@ function setupSpeechRecognition() {
 }
 
 function toggleVoiceInput() {
-    if (!voiceEnabled || !speechRecognition) return;
-    if (recognitionActive) { speechRecognition.abort(); }
-    else { recognitionActive = true; speechRecognition.start(); }
-    updateVoiceButton();
+    if (!voiceEnabled) return;
+    if (speechRecognition) {
+        // Use browser SpeechRecognition
+        if (recognitionActive) { speechRecognition.abort(); }
+        else { recognitionActive = true; speechRecognition.start(); }
+        updateVoiceButton();
+    }
 }
 
 function updateVoiceButton() {
     if (!app.voiceBtn) return;
-    app.voiceBtn.textContent = recognitionActive ? '🎤🔴' : '🎤';
-    app.voiceBtn.classList.toggle('active', recognitionActive);
+    if (recognitionActive) {
+        app.voiceBtn.textContent = '🛑';
+        app.voiceBtn.classList.add('recording');
+        app.voiceBtn.title = 'Stop recording';
+    } else {
+        app.voiceBtn.textContent = '🎤';
+        app.voiceBtn.classList.remove('recording');
+        app.voiceBtn.title = 'Voice input';
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Camera — capture photo for vision AI
+// ---------------------------------------------------------------------------
+async function captureFromCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: isMobile() ? 'environment' : 'user' }
+        });
+
+        // Create a brief video preview overlay
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:3000;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;';
+
+        const video = document.createElement('video');
+        video.style.cssText = 'width:100%;max-width:480px;border-radius:12px;';
+        video.autoplay = true;
+        video.playsInline = true;
+        video.srcObject = stream;
+
+        const captureBtn = document.createElement('button');
+        captureBtn.textContent = '📷 Capture';
+        captureBtn.style.cssText = 'padding:0.75rem 2rem;background:var(--accent);color:var(--accent-fg);border:none;border-radius:20px;font-size:1rem;font-weight:600;cursor:pointer;';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.cssText = 'padding:0.5rem 1.5rem;background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:20px;font-size:0.9rem;cursor:pointer;';
+
+        overlay.appendChild(video);
+        overlay.appendChild(captureBtn);
+        overlay.appendChild(cancelBtn);
+        document.body.appendChild(overlay);
+
+        captureBtn.onclick = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            stream.getTracks().forEach(t => t.stop());
+            document.body.removeChild(overlay);
+            const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+            pendingImage = base64;
+            showImagePreview(canvas.toDataURL('image/jpeg', 0.85));
+        };
+
+        cancelBtn.onclick = () => {
+            stream.getTracks().forEach(t => t.stop());
+            document.body.removeChild(overlay);
+        };
+    } catch (err) {
+        addSystemMessage('Camera access denied or unavailable.');
+    }
+}
+
+function showImagePreview(dataUrl) {
+    if (!app.imagePreviewArea) return;
+    app.previewImg.src = dataUrl;
+    app.imagePreviewArea.style.display = 'flex';
+}
+
+function removeImage() {
+    pendingImage = null;
+    if (app.imagePreviewArea) app.imagePreviewArea.style.display = 'none';
+    if (app.previewImg) app.previewImg.src = '';
+}
+
+// ---------------------------------------------------------------------------
+// TTS — speak response text using backend Piper or browser synthesis
+// ---------------------------------------------------------------------------
+async function speakResponse(text) {
+    if (!ttsEnabled || !text) return;
+    const stripped = text
+        .replace(/```[\s\S]*?```/g, 'code block')
+        .replace(/[*_`#\[\]]/g, '')
+        .trim();
+    if (!stripped) return;
+
+    try {
+        // Try server-side Piper TTS first
+        const resp = await fetch('/api/speak', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}`},
+            body: JSON.stringify({text: stripped.slice(0, 500)}),
+        });
+        if (resp.ok) {
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.onended = () => URL.revokeObjectURL(url);
+            audio.play();
+            return;
+        }
+    } catch (_) {}
+
+    // Fallback: browser SpeechSynthesis
+    if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        const utt = new SpeechSynthesisUtterance(stripped.slice(0, 300));
+        window.speechSynthesis.speak(utt);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SOUL.md — persona editor
+// ---------------------------------------------------------------------------
+async function loadSoul() {
+    if (!app.soulTextarea) return;
+    try {
+        const resp = await apiFetch('/api/soul');
+        const data = await resp.json();
+        app.soulTextarea.value = data.content || '';
+    } catch (_) {}
+}
+
+async function saveSoul() {
+    if (!app.soulTextarea || !app.soulSaveBtn) return;
+    const content = app.soulTextarea.value;
+    app.soulSaveBtn.disabled = true;
+    app.soulSaveBtn.textContent = 'Saving...';
+    try {
+        const resp = await apiFetch('/api/soul', {
+            method: 'POST',
+            body: JSON.stringify({content}),
+        });
+        if (resp.ok) {
+            app.soulSaveBtn.textContent = '✓ Saved';
+            setTimeout(() => { app.soulSaveBtn.textContent = 'Save Persona'; app.soulSaveBtn.disabled = false; }, 1800);
+        } else {
+            app.soulSaveBtn.textContent = 'Error';
+            app.soulSaveBtn.disabled = false;
+        }
+    } catch (_) {
+        app.soulSaveBtn.textContent = 'Error';
+        app.soulSaveBtn.disabled = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RAG — document upload and list
+// ---------------------------------------------------------------------------
+async function handleRagUpload() {
+    const file = app.ragFileInput.files[0];
+    if (!file) return;
+    if (app.ragStatus) app.ragStatus.textContent = `Uploading ${file.name}...`;
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+        const resp = await fetch('/api/rag/upload', {
+            method: 'POST',
+            headers: authToken ? {Authorization: `Bearer ${authToken}`} : {},
+            body: fd,
+        });
+        if (resp.status === 401) { showLoginOverlay(); return; }
+        const data = await resp.json();
+        if (app.ragStatus) app.ragStatus.textContent = data.message || 'Uploaded!';
+        app.ragFileInput.value = '';
+        await loadRagDocs();
+        setTimeout(() => { if (app.ragStatus) app.ragStatus.textContent = ''; }, 4000);
+    } catch (err) {
+        if (app.ragStatus) app.ragStatus.textContent = 'Upload failed: ' + err.message;
+    }
+}
+
+async function loadRagDocs() {
+    if (!app.ragDocList) return;
+    try {
+        const resp = await apiFetch('/api/rag/documents');
+        const data = await resp.json();
+        const sources = data.sources || [];
+        app.ragDocList.innerHTML = '';
+        sources.forEach(src => {
+            const item = document.createElement('div');
+            item.className = 'rag-doc-item';
+            const span = document.createElement('span');
+            span.textContent = src;
+            item.appendChild(span);
+            app.ragDocList.appendChild(item);
+        });
+        if (sources.length === 0) {
+            app.ragDocList.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">No documents yet</div>';
+        }
+    } catch (_) {}
+}
+
+// ---------------------------------------------------------------------------
+// Export conversation as Markdown
+// ---------------------------------------------------------------------------
+function exportConversation() {
+    const messages = [...app.messages.querySelectorAll('.message')];
+    if (messages.length === 0) { alert('Nothing to export yet.'); return; }
+
+    const lines = messages.map(m => {
+        if (m.classList.contains('system-message')) return null;
+        const isUser = m.classList.contains('user-message');
+        const role = isUser ? '**You**' : '**GarudaAI**';
+        const content = m.querySelector('.message-content');
+        const text = content ? (content.dataset.raw || content.textContent || '').trim() : '';
+        return `${role}\n\n${text}`;
+    }).filter(Boolean);
+
+    const md = lines.join('\n\n---\n\n');
+    const blob = new Blob([md], {type: 'text/markdown; charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `garuda-chat-${new Date().toISOString().slice(0,10)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +603,7 @@ function updateVoiceButton() {
 // ---------------------------------------------------------------------------
 function loadSettings() {
     if (app.voiceToggle) app.voiceToggle.checked = voiceEnabled;
+    if (app.ttsToggle)   app.ttsToggle.checked = ttsEnabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +615,7 @@ function switchTab(tabName) {
         c.style.display = c.id === `${tabName}-tab` ? 'block' : 'none';
     });
     if (tabName === 'history') loadSessionHistory();
+    if (tabName === 'settings') { loadSoul(); loadRagDocs(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -369,16 +627,18 @@ async function sendMessage() {
 
     app.input.value = '';
     app.input.style.height = 'auto';
-    // Dismiss keyboard on mobile after sending
     if (isMobile()) app.input.blur();
 
-    addUserMessage(message);
+    const imageToSend = pendingImage;
+    if (imageToSend) removeImage();  // clear preview immediately
+
+    addUserMessage(message, imageToSend);
 
     const isSlowMode = currentModel.includes('-airllm');
     const loadingId = addLoadingMessage(isSlowMode);
 
     try {
-        await streamChatResponse(message, loadingId);
+        await streamChatResponse(message, loadingId, 0, imageToSend);
     } catch (error) {
         updateMessage(loadingId, `Error: ${error.message}`, false);
     }
@@ -392,34 +652,35 @@ function setConnStatus(state) {
     app.connStatus.title = {ok: 'Connected', reconnecting: 'Reconnecting...', error: 'Disconnected'}[state] || '';
 }
 
-async function streamChatResponse(message, loadingId, attempt = 0) {
+async function streamChatResponse(message, loadingId, attempt = 0, image = null) {
     const MAX_ATTEMPTS = 3;
     try {
-        await _doWebSocketStream(message, loadingId);
+        await _doWebSocketStream(message, loadingId, image);
     } catch (err) {
         if (attempt < MAX_ATTEMPTS - 1) {
             const delay = 1000 * Math.pow(2, attempt);
             setConnStatus('reconnecting');
             updateMessage(loadingId, `⏳ Reconnecting (attempt ${attempt + 2}/${MAX_ATTEMPTS})...`, false);
             await new Promise(r => setTimeout(r, delay));
-            return streamChatResponse(message, loadingId, attempt + 1);
+            return streamChatResponse(message, loadingId, attempt + 1, image);
         }
         setConnStatus('error');
         throw err;
     }
 }
 
-function _doWebSocketStream(message, loadingId) {
+function _doWebSocketStream(message, loadingId, image = null) {
     return new Promise((resolve, reject) => {
         let pendingText = '';
         let flushTimer = null;
         let resolved = false;
         let firstToken = true;
+        let finalText = '';
 
         const flushPending = () => {
             if (!pendingText) { flushTimer = null; return; }
             updateMessage(loadingId, pendingText, true);
-            totalTokensThisSession += pendingText.split(/\s+/).length;
+            finalText += pendingText;
             pendingText = '';
             flushTimer = null;
         };
@@ -429,12 +690,14 @@ function _doWebSocketStream(message, loadingId) {
             flushTimer = setTimeout(flushPending, 40);
         };
 
-        const finalize = () => {
+        const finalize = (stats) => {
             if (resolved) return;
             resolved = true;
             if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
             flushPending();
             setConnStatus('ok');
+            if (stats) attachMessageStats(loadingId, stats);
+            if (finalText) speakResponse(finalText);
             resolve();
         };
 
@@ -446,12 +709,14 @@ function _doWebSocketStream(message, loadingId) {
 
         ws.onopen = () => {
             setConnStatus('ok');
-            ws.send(JSON.stringify({
+            const payload = {
                 model: currentModel,
                 message,
                 session_id: currentSessionId,
                 use_case: localStorage.getItem('useCase') || 'general',
-            }));
+            };
+            if (image) payload.image = image;
+            ws.send(JSON.stringify(payload));
         };
 
         ws.onmessage = e => {
@@ -460,18 +725,23 @@ function _doWebSocketStream(message, loadingId) {
                 try { parsed = JSON.parse(e.data); } catch (_) {}
 
                 if (parsed) {
-                    if (parsed.type === 'done') { ws.close(); finalize(); return; }
+                    if (parsed.type === 'done') {
+                        ws.close();
+                        finalize(parsed.stats || null);
+                        return;
+                    }
                     if (parsed.type === 'error') {
                         const errText = `Error: ${parsed.message}`;
                         if (firstToken) { updateMessage(loadingId, errText, false); firstToken = false; }
                         else { pendingText += errText; scheduleFlush(); }
-                        ws.close(); finalize(); return;
+                        ws.close(); finalize(null); return;
                     }
                 }
 
                 const text = (parsed && typeof parsed === 'object') ? JSON.stringify(parsed) : e.data;
                 if (firstToken) {
                     updateMessage(loadingId, text, false);
+                    finalText = text;
                     firstToken = false;
                 } else {
                     pendingText += text;
@@ -483,8 +753,19 @@ function _doWebSocketStream(message, loadingId) {
         };
 
         ws.onerror = () => reject(new Error('WebSocket connection failed'));
-        ws.onclose = () => finalize();
+        ws.onclose = () => finalize(null);
     });
+}
+
+function attachMessageStats(messageId, stats) {
+    const div = document.getElementById(messageId);
+    if (!div || !stats) return;
+    const content = div.querySelector('.message-content');
+    if (!content) return;
+    const statsEl = document.createElement('span');
+    statsEl.className = 'msg-stats';
+    statsEl.textContent = `~${stats.tokens} tokens · ${stats.tps} tok/s`;
+    content.appendChild(statsEl);
 }
 
 // ---------------------------------------------------------------------------
@@ -500,12 +781,24 @@ function renderMessageContent(contentEl, text, append = false) {
     }
 }
 
-function addUserMessage(text) {
+function addUserMessage(text, image = null) {
     const div = document.createElement('div');
     div.className = 'message user-message';
     const content = document.createElement('div');
     content.className = 'message-content';
-    content.textContent = text;
+
+    if (image) {
+        const img = document.createElement('img');
+        img.className = 'message-image';
+        img.src = `data:image/jpeg;base64,${image}`;
+        img.alt = 'Attached image';
+        content.appendChild(img);
+    }
+
+    const textNode = document.createElement('span');
+    textNode.textContent = text;
+    content.appendChild(textNode);
+
     div.appendChild(content);
     app.messages.appendChild(div);
     scrollToBottom();
@@ -550,6 +843,9 @@ function updateMessage(messageId, text, append = false) {
     const div = document.getElementById(messageId);
     if (!div) return;
     const content = div.querySelector('.message-content');
+    // Remove typing indicator on first real content
+    const indicator = content.querySelector('.typing-indicator');
+    if (indicator && !append) indicator.remove();
     renderMessageContent(content, text, append);
     scrollToBottom();
 }
@@ -586,7 +882,6 @@ async function createNewSession() {
         currentSessionId = 'local-' + Date.now();
     }
     app.messages.innerHTML = '';
-    totalTokensThisSession = 0;
 }
 
 async function loadSessionHistory() {
@@ -619,7 +914,7 @@ async function loadSessionHistory() {
             div.addEventListener('click', () => { loadSession(session.session_id); closeSidebar(); });
             listContainer.appendChild(div);
         });
-    } catch (err) {
+    } catch {
         listContainer.innerHTML = '<div class="placeholder">Error loading history</div>';
     }
 }
@@ -644,7 +939,7 @@ async function loadSession(sessionId) {
 }
 
 // ---------------------------------------------------------------------------
-// Password update — sends new_password key
+// Password update
 // ---------------------------------------------------------------------------
 async function updatePassword() {
     const input = document.getElementById('password-input');
