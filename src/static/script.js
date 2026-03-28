@@ -1,6 +1,6 @@
 /**
  * GarudaAI Frontend
- * Chat interface with markdown rendering, auth, WebSocket reconnection, and session management.
+ * Mobile-first chat interface with WebSocket streaming, markdown, auth, sessions.
  */
 
 // ---------------------------------------------------------------------------
@@ -13,6 +13,7 @@ let recognitionActive = false;
 let speechRecognition = null;
 let authToken = localStorage.getItem('garudaai_token') || '';
 let totalTokensThisSession = 0;
+const isMobile = () => window.innerWidth <= 768 || 'ontouchstart' in window;
 
 // ---------------------------------------------------------------------------
 // DOM refs
@@ -25,9 +26,8 @@ const app = {
     voiceBtn:        document.getElementById('voice-btn'),
     settingsBtn:     document.getElementById('settings-btn'),
     sidebar:         document.getElementById('sidebar'),
-    fileList:        document.getElementById('file-list'),
-    clearHistoryBtn: document.getElementById('clear-history-btn'),
-    settingsModal:   document.getElementById('settings-modal'),
+    sidebarBackdrop: document.getElementById('sidebar-backdrop'),
+    clearHistoryBtn: document.getElementById('new-session-btn'),
     voiceToggle:     document.getElementById('voice-toggle'),
     passwordBtn:     document.getElementById('password-btn'),
     tabBtns:         document.querySelectorAll('.tab-btn'),
@@ -35,6 +35,7 @@ const app = {
     connStatus:      document.getElementById('conn-status'),
     slowBadge:       document.getElementById('slow-mode-badge'),
     sidebarToggle:   document.getElementById('sidebar-toggle-btn'),
+    sidebarClose:    document.getElementById('sidebar-close-btn'),
     loginOverlay:    document.getElementById('login-overlay'),
     loginPassword:   document.getElementById('login-password'),
     loginBtn:        document.getElementById('login-btn'),
@@ -45,32 +46,48 @@ const app = {
 // Initialization
 // ---------------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log('GarudaAI initializing...');
     loadSettings();
 
-    // Check auth — try loading models; if 401, show login
     const ok = await tryLoadModels();
     if (!ok) {
         showLoginOverlay();
         return;
     }
-
     finishInit();
 });
 
 async function finishInit() {
     setupEventListeners();
+    setupVisualViewport();
 
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
         setupSpeechRecognition();
     } else {
-        app.voiceBtn.disabled = true;
-        app.voiceBtn.title = 'Voice input not supported in this browser';
+        if (app.voiceBtn) { app.voiceBtn.disabled = true; app.voiceBtn.title = 'Voice not supported'; }
     }
 
     await createNewSession();
-    addSystemMessage('Welcome to GarudaAI! Select a model and start chatting. Press Ctrl+Enter or click Send.');
-    console.log('GarudaAI ready');
+    const hint = isMobile() ? 'Tap Send to chat.' : 'Press Enter or click Send to chat.';
+    addSystemMessage(`Welcome to GarudaAI! ${hint}`);
+}
+
+// ---------------------------------------------------------------------------
+// Virtual viewport — keep input visible when keyboard opens (iOS/Android)
+// ---------------------------------------------------------------------------
+function setupVisualViewport() {
+    if (!window.visualViewport) return;
+    const container = document.querySelector('.app-container');
+    const onResize = () => {
+        // On mobile, shrink the app container to the visible viewport
+        if (isMobile()) {
+            container.style.height = window.visualViewport.height + 'px';
+        } else {
+            container.style.height = '';
+        }
+    };
+    window.visualViewport.addEventListener('resize', onResize);
+    window.visualViewport.addEventListener('scroll', onResize);
+    onResize();
 }
 
 // ---------------------------------------------------------------------------
@@ -78,18 +95,14 @@ async function finishInit() {
 // ---------------------------------------------------------------------------
 function showLoginOverlay() {
     app.loginOverlay.style.display = 'flex';
-    app.loginPassword.focus();
+    setTimeout(() => app.loginPassword && app.loginPassword.focus(), 50);
 }
-
-function hideLoginOverlay() {
-    app.loginOverlay.style.display = 'none';
-}
+function hideLoginOverlay() { app.loginOverlay.style.display = 'none'; }
 
 async function doLogin() {
     const password = app.loginPassword.value;
     app.loginError.textContent = '';
     app.loginBtn.disabled = true;
-
     try {
         const resp = await fetch('/api/auth/login', {
             method: 'POST',
@@ -100,7 +113,7 @@ async function doLogin() {
             app.loginError.textContent = 'Incorrect password.';
             app.loginBtn.disabled = false;
             app.loginPassword.value = '';
-            app.loginPassword.focus();
+            setTimeout(() => app.loginPassword.focus(), 50);
             return;
         }
         const data = await resp.json();
@@ -146,8 +159,8 @@ async function tryLoadModels() {
         populateModelSelector(data.models || []);
         return true;
     } catch {
-        app.modelSelector.innerHTML = '<option>Error loading models</option>';
-        return true; // network issue, not auth issue
+        if (app.modelSelector) app.modelSelector.innerHTML = '<option>Error loading models</option>';
+        return true;
     }
 }
 
@@ -155,11 +168,10 @@ function populateModelSelector(models) {
     app.modelSelector.innerHTML = '';
 
     if (models.length === 0) {
-        app.modelSelector.innerHTML = '<option value="">No models — run: ollama pull llama3.2:3b</option>';
+        app.modelSelector.innerHTML = '<option value="">No models — run: ollama pull gemma2:2b</option>';
         return;
     }
 
-    // Group: normal vs airllm
     const normal = models.filter(m => !m.name.includes('-airllm'));
     const airllm = models.filter(m => m.name.includes('-airllm'));
 
@@ -179,7 +191,6 @@ function populateModelSelector(models) {
     addGroup('Models', normal);
     addGroup('Slow Mode (AirLLM)', airllm);
 
-    // Auto-select smallest non-airllm model
     const parseSize = name => {
         const m = String(name || '').match(/(\d+(?:\.\d+)?)\s*b/i);
         return m ? parseFloat(m[1]) : Infinity;
@@ -196,22 +207,46 @@ function updateSlowModeBadge() {
 }
 
 // ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+function openSidebar() {
+    app.sidebar.classList.add('sidebar-open');
+    app.sidebarBackdrop.classList.add('active');
+    // Load history when sidebar opens
+    loadSessionHistory();
+}
+
+function closeSidebar() {
+    app.sidebar.classList.remove('sidebar-open');
+    app.sidebarBackdrop.classList.remove('active');
+}
+
+function toggleSidebar() {
+    if (app.sidebar.classList.contains('sidebar-open')) {
+        closeSidebar();
+    } else {
+        openSidebar();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Event Listeners
 // ---------------------------------------------------------------------------
 function setupEventListeners() {
     app.sendBtn.addEventListener('click', sendMessage);
 
+    // Desktop: Enter sends. Mobile: Enter adds newline (let user tap Send button)
     app.input.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && !e.shiftKey && !isMobile()) {
             e.preventDefault();
             sendMessage();
         }
     });
 
     // Auto-expand textarea
-    app.input.addEventListener('input', e => {
-        e.target.style.height = 'auto';
-        e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
+    app.input.addEventListener('input', () => {
+        app.input.style.height = 'auto';
+        app.input.style.height = Math.min(app.input.scrollHeight, 140) + 'px';
     });
 
     app.modelSelector.addEventListener('change', e => {
@@ -220,44 +255,34 @@ function setupEventListeners() {
         createNewSession();
     });
 
-    app.voiceBtn.addEventListener('click', toggleVoiceInput);
-    app.settingsBtn.addEventListener('click', () => {
-        app.settingsModal.style.display = 'block';
-    });
-    document.querySelector('.btn-close').addEventListener('click', () => {
-        app.settingsModal.style.display = 'none';
-    });
-
-    // Close modal on backdrop click
-    app.settingsModal.addEventListener('click', e => {
-        if (e.target === app.settingsModal) app.settingsModal.style.display = 'none';
-    });
+    if (app.voiceBtn) app.voiceBtn.addEventListener('click', toggleVoiceInput);
 
     app.tabBtns.forEach(btn => {
         btn.addEventListener('click', e => switchTab(e.currentTarget.dataset.tab));
     });
 
-    app.clearHistoryBtn.addEventListener('click', () => {
-        if (confirm('Clear message history?')) {
-            app.messages.innerHTML = '';
-            totalTokensThisSession = 0;
+    if (app.clearHistoryBtn) {
+        app.clearHistoryBtn.addEventListener('click', () => {
             createNewSession();
-        }
-    });
+            closeSidebar();
+        });
+    }
 
-    app.voiceToggle.addEventListener('change', e => {
-        voiceEnabled = e.target.checked;
-        localStorage.setItem('voiceEnabled', voiceEnabled ? 'true' : 'false');
-    });
+    if (app.voiceToggle) {
+        app.voiceToggle.addEventListener('change', e => {
+            voiceEnabled = e.target.checked;
+            localStorage.setItem('voiceEnabled', voiceEnabled ? 'true' : 'false');
+        });
+    }
 
-    app.passwordBtn.addEventListener('click', updatePassword);
+    if (app.passwordBtn) app.passwordBtn.addEventListener('click', updatePassword);
 
-    // Sidebar toggle (mobile)
-    app.sidebarToggle.addEventListener('click', () => {
-        app.sidebar.classList.toggle('sidebar-open');
-    });
+    // Sidebar open/close
+    if (app.sidebarToggle) app.sidebarToggle.addEventListener('click', toggleSidebar);
+    if (app.sidebarClose)  app.sidebarClose.addEventListener('click', closeSidebar);
+    if (app.sidebarBackdrop) app.sidebarBackdrop.addEventListener('click', closeSidebar);
 
-    // Copy button delegation on messages container
+    // Copy button delegation
     app.messages.addEventListener('click', e => {
         if (e.target.classList.contains('copy-btn')) {
             const msgDiv = e.target.closest('.message');
@@ -267,32 +292,20 @@ function setupEventListeners() {
             navigator.clipboard.writeText(text).then(() => {
                 e.target.textContent = '✓';
                 setTimeout(() => { e.target.textContent = '⎘'; }, 1500);
-            }).catch(() => {
-                e.target.textContent = '!';
-            });
+            }).catch(() => { e.target.textContent = '!'; });
         }
     });
 
-    // Login overlay
+    // Login
     if (app.loginBtn) app.loginBtn.addEventListener('click', doLogin);
     if (app.loginPassword) {
-        app.loginPassword.addEventListener('keydown', e => {
-            if (e.key === 'Enter') doLogin();
-        });
+        app.loginPassword.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
     }
 
-    // Global keyboard shortcuts
+    // Keyboard shortcuts (desktop only)
     document.addEventListener('keydown', e => {
-        // Ctrl+/ to focus input
-        if (e.ctrlKey && e.key === '/') {
-            e.preventDefault();
-            app.input.focus();
-        }
-        // Escape to close modal/sidebar
-        if (e.key === 'Escape') {
-            app.settingsModal.style.display = 'none';
-            app.sidebar.classList.remove('sidebar-open');
-        }
+        if (e.ctrlKey && e.key === '/') { e.preventDefault(); app.input.focus(); }
+        if (e.key === 'Escape') closeSidebar();
     });
 }
 
@@ -305,9 +318,10 @@ function setupSpeechRecognition() {
     speechRecognition.continuous = false;
     speechRecognition.interimResults = false;
     speechRecognition.lang = 'en-US';
-
     speechRecognition.onresult = e => {
         app.input.value = Array.from(e.results).map(r => r[0].transcript).join('');
+        // Trigger resize
+        app.input.dispatchEvent(new Event('input'));
         recognitionActive = false;
         updateVoiceButton();
     };
@@ -317,16 +331,13 @@ function setupSpeechRecognition() {
 
 function toggleVoiceInput() {
     if (!voiceEnabled || !speechRecognition) return;
-    if (recognitionActive) {
-        speechRecognition.abort();
-    } else {
-        recognitionActive = true;
-        speechRecognition.start();
-    }
+    if (recognitionActive) { speechRecognition.abort(); }
+    else { recognitionActive = true; speechRecognition.start(); }
     updateVoiceButton();
 }
 
 function updateVoiceButton() {
+    if (!app.voiceBtn) return;
     app.voiceBtn.textContent = recognitionActive ? '🎤🔴' : '🎤';
     app.voiceBtn.classList.toggle('active', recognitionActive);
 }
@@ -343,8 +354,9 @@ function loadSettings() {
 // ---------------------------------------------------------------------------
 function switchTab(tabName) {
     app.tabBtns.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
-    app.tabContents.forEach(c => { c.style.display = c.id === `${tabName}-tab` ? 'block' : 'none'; });
-
+    app.tabContents.forEach(c => {
+        c.style.display = c.id === `${tabName}-tab` ? 'block' : 'none';
+    });
     if (tabName === 'history') loadSessionHistory();
 }
 
@@ -357,6 +369,8 @@ async function sendMessage() {
 
     app.input.value = '';
     app.input.style.height = 'auto';
+    // Dismiss keyboard on mobile after sending
+    if (isMobile()) app.input.blur();
 
     addUserMessage(message);
 
@@ -371,10 +385,9 @@ async function sendMessage() {
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket streaming with exponential backoff reconnection
+// WebSocket streaming with exponential backoff
 // ---------------------------------------------------------------------------
 function setConnStatus(state) {
-    // state: 'ok' | 'reconnecting' | 'error'
     app.connStatus.className = `conn-status conn-${state}`;
     app.connStatus.title = {ok: 'Connected', reconnecting: 'Reconnecting...', error: 'Disconnected'}[state] || '';
 }
@@ -413,7 +426,7 @@ function _doWebSocketStream(message, loadingId) {
 
         const scheduleFlush = () => {
             if (flushTimer) return;
-            flushTimer = setTimeout(flushPending, 50);
+            flushTimer = setTimeout(flushPending, 40);
         };
 
         const finalize = () => {
@@ -443,7 +456,6 @@ function _doWebSocketStream(message, loadingId) {
 
         ws.onmessage = e => {
             try {
-                // Try parsing as JSON first (done / error signals)
                 let parsed;
                 try { parsed = JSON.parse(e.data); } catch (_) {}
 
@@ -457,10 +469,8 @@ function _doWebSocketStream(message, loadingId) {
                     }
                 }
 
-                // Plain text token
                 const text = (parsed && typeof parsed === 'object') ? JSON.stringify(parsed) : e.data;
                 if (firstToken) {
-                    // Replace typing indicator with first real content
                     updateMessage(loadingId, text, false);
                     firstToken = false;
                 } else {
@@ -478,13 +488,11 @@ function _doWebSocketStream(message, loadingId) {
 }
 
 // ---------------------------------------------------------------------------
-// Message rendering — unified through renderMessageContent
+// Message rendering
 // ---------------------------------------------------------------------------
-
 function renderMessageContent(contentEl, text, append = false) {
     const raw = append ? (contentEl.dataset.raw || '') + text : text;
     contentEl.dataset.raw = raw;
-
     if (window.marked && window.DOMPurify) {
         contentEl.innerHTML = DOMPurify.sanitize(marked.parse(raw));
     } else {
@@ -497,7 +505,7 @@ function addUserMessage(text) {
     div.className = 'message user-message';
     const content = document.createElement('div');
     content.className = 'message-content';
-    content.textContent = text;   // user text is always plain
+    content.textContent = text;
     div.appendChild(content);
     app.messages.appendChild(div);
     scrollToBottom();
@@ -511,7 +519,6 @@ function addLoadingMessage(slowMode = false) {
     const content = document.createElement('div');
     content.className = 'message-content';
 
-    // Typing indicator
     const indicator = document.createElement('span');
     indicator.className = 'typing-indicator';
     for (let i = 0; i < 3; i++) {
@@ -522,16 +529,15 @@ function addLoadingMessage(slowMode = false) {
     if (slowMode) {
         const label = document.createElement('span');
         label.className = 'slow-mode-label';
-        label.textContent = ' Thinking… (Slow Mode: 1-3 min)';
+        label.textContent = ' Thinking… (1-3 min)';
         indicator.appendChild(label);
     }
     content.appendChild(indicator);
 
-    // Copy button
     const copyBtn = document.createElement('button');
     copyBtn.className = 'copy-btn';
     copyBtn.textContent = '⎘';
-    copyBtn.title = 'Copy to clipboard';
+    copyBtn.title = 'Copy';
 
     div.appendChild(content);
     div.appendChild(copyBtn);
@@ -566,13 +572,13 @@ function addSystemMessage(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Session management
+// Sessions
 // ---------------------------------------------------------------------------
 async function createNewSession() {
     try {
         const resp = await apiFetch('/api/sessions', {
             method: 'POST',
-            body: JSON.stringify({model_name: currentModel || 'llama3.2:3b'}),
+            body: JSON.stringify({model_name: currentModel || 'gemma2:2b'}),
         });
         const data = await resp.json();
         currentSessionId = data.session_id;
@@ -581,22 +587,19 @@ async function createNewSession() {
     }
     app.messages.innerHTML = '';
     totalTokensThisSession = 0;
-    addSystemMessage('New session started');
 }
 
 async function loadSessionHistory() {
     const listContainer = document.getElementById('history-list');
     if (!listContainer) return;
-
     try {
         const resp = await apiFetch('/api/sessions');
         const data = await resp.json();
         const sessions = data.sessions || [];
-
         listContainer.innerHTML = '';
 
         if (sessions.length === 0) {
-            listContainer.innerHTML = '<div class="placeholder">No session history yet</div>';
+            listContainer.innerHTML = '<div class="placeholder">No history yet</div>';
             return;
         }
 
@@ -613,13 +616,11 @@ async function loadSessionHistory() {
             div.appendChild(title);
             div.appendChild(document.createElement('br'));
             div.appendChild(meta);
-
-            div.addEventListener('click', () => loadSession(session.session_id));
+            div.addEventListener('click', () => { loadSession(session.session_id); closeSidebar(); });
             listContainer.appendChild(div);
         });
     } catch (err) {
         listContainer.innerHTML = '<div class="placeholder">Error loading history</div>';
-        console.error('Failed to load history:', err);
     }
 }
 
@@ -627,7 +628,6 @@ async function loadSession(sessionId) {
     try {
         const resp = await apiFetch(`/api/sessions/${sessionId}`);
         const data = await resp.json();
-
         currentSessionId = sessionId;
         currentModel = data.session.model_name;
         if (app.modelSelector) app.modelSelector.value = currentModel;
@@ -635,37 +635,36 @@ async function loadSession(sessionId) {
         app.messages.innerHTML = '';
 
         data.messages.forEach(msg => {
-            if (msg.role === 'user') {
-                addUserMessage(msg.content);
-            } else if (msg.role === 'assistant') {
-                addAssistantMessage(msg.content);
-            }
+            if (msg.role === 'user') addUserMessage(msg.content);
+            else if (msg.role === 'assistant') addAssistantMessage(msg.content);
         });
-
-        switchTab('files'); // switch back to main area
     } catch (err) {
         console.error('Failed to load session:', err);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Password update
+// Password update — sends new_password key
 // ---------------------------------------------------------------------------
 async function updatePassword() {
-    const password = document.getElementById('password-input').value;
-    if (!password) { alert('Please enter a password'); return; }
+    const input = document.getElementById('password-input');
+    const new_password = input ? input.value : '';
+    if (!new_password) { alert('Please enter a new password'); return; }
+    if (new_password.length < 8) { alert('Password must be at least 8 characters'); return; }
     try {
         const resp = await apiFetch('/api/auth/update-password', {
             method: 'POST',
-            body: JSON.stringify({password}),
+            body: JSON.stringify({new_password}),
         });
         if (resp.ok) {
+            if (input) input.value = '';
             alert('Password updated. Please log in again.');
             authToken = '';
             localStorage.removeItem('garudaai_token');
             showLoginOverlay();
         } else {
-            alert('Failed to update password.');
+            const err = await resp.json().catch(() => ({}));
+            alert('Failed: ' + (err.detail || 'Unknown error'));
         }
     } catch (e) {
         alert('Error: ' + e.message);
@@ -681,10 +680,6 @@ function scrollToBottom() {
     });
 }
 
-// Configure marked.js if available
 if (window.marked) {
-    marked.setOptions({
-        breaks: true,
-        gfm: true,
-    });
+    marked.setOptions({ breaks: true, gfm: true });
 }

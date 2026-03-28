@@ -26,7 +26,7 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.109.0",
-    "uvicorn>=0.28.0",
+    "uvicorn[standard]>=0.28.0",
     "pydantic>=2.9.0",
     "requests>=2.32.0",
     "httpx>=0.27.0",
@@ -52,17 +52,16 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/garudaai/garudaai"
-Documentation = "https://garudaai.readthedocs.io"
-Repository = "https://github.com/garudaai/garudaai.git"
-Issues = "https://github.com/garudaai/garudaai/issues"
+Homepage = "https://github.com/SanyamWadhwa07/Garuda_AI"
+Repository = "https://github.com/SanyamWadhwa07/Garuda_AI.git"
+Issues = "https://github.com/SanyamWadhwa07/Garuda_AI/issues"
 
 [project.scripts]
 garudaai = "src.cli:main"
 
 [tool.setuptools]
-packages = ["src"]
-package-data = { src = ["static/**/*"] }
+packages = ["src", "src.tools"]
+package-data = { src = ["static/**/*", "static/*.js", "static/*.css", "static/*.html", "static/*.json"] }
 
 [tool.black]
 line-length = 100

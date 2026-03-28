@@ -2,9 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="GarudaAI - Local AI Agent Platform">
-    <meta name="theme-color" content="#1a1a1a">
+    <meta name="theme-color" content="#1a1f3a">
+
+    <!-- iOS PWA -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="GarudaAI">
+    <meta name="mobile-web-app-capable" content="yes">
 
     <title>GarudaAI</title>
 
@@ -14,34 +20,43 @@
 </head>
 <body>
 
-    <!-- Login overlay (shown when auth is required) -->
+    <!-- Login overlay -->
     <div id="login-overlay" class="login-overlay" style="display:none;">
         <div class="login-box">
             <h2>🦅 GarudaAI</h2>
             <p>Enter password to continue</p>
-            <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+            <input type="password" id="login-password" placeholder="Password"
+                   autocomplete="current-password" autocorrect="off">
             <button id="login-btn" class="btn-primary">Login</button>
             <div id="login-error" class="login-error"></div>
         </div>
     </div>
 
+    <!-- Sidebar backdrop (mobile) -->
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+
     <div id="app" class="app-container">
         <!-- Header -->
         <header class="header">
-            <div class="header-title">
+            <div class="header-left">
                 <button id="sidebar-toggle-btn" class="btn-icon sidebar-toggle" title="Toggle sidebar">☰</button>
                 <h1>🦅 GarudaAI</h1>
             </div>
-            <div class="header-controls">
-                <span id="slow-mode-badge" class="slow-mode-badge" style="display:none;" title="Layer offloading active — responses take 1-3 min">⚠️ Slow Mode</span>
+            <div class="header-right">
+                <span id="slow-mode-badge" class="slow-mode-badge" style="display:none;"
+                      title="Layer offloading active — responses take 1-3 min">⚠️ Slow</span>
                 <span id="conn-status" class="conn-status conn-ok" title="Connection status">●</span>
-                <select id="model-selector" class="model-selector">
-                    <option value="">Loading models...</option>
-                </select>
                 <button id="settings-btn" class="btn-icon" title="Settings">⚙️</button>
-                <button id="voice-btn" class="btn-icon" title="Voice input">🎤</button>
             </div>
         </header>
+
+        <!-- Model selector row (full width on mobile) -->
+        <div class="model-bar">
+            <select id="model-selector" class="model-selector">
+                <option value="">Loading models...</option>
+            </select>
+            <button id="voice-btn" class="btn-icon" title="Voice input">🎤</button>
+        </div>
 
         <!-- Main Content -->
         <main class="main-content">
@@ -55,35 +70,33 @@
                         id="message-input"
                         class="message-input"
                         placeholder="Ask me anything..."
-                        rows="3"></textarea>
-                    <button id="send-btn" class="btn-primary">Send</button>
+                        rows="1"
+                        enterkeyhint="send"
+                        autocorrect="off"
+                        autocapitalize="sentences"></textarea>
+                    <button id="send-btn" class="btn-send" title="Send">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                            <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
 
             <!-- Right Sidebar -->
             <aside id="sidebar" class="sidebar">
+                <div class="sidebar-header">
+                    <span>Menu</span>
+                    <button id="sidebar-close-btn" class="btn-icon">✕</button>
+                </div>
                 <div class="sidebar-tabs">
-                    <button class="tab-btn active" data-tab="files">📁 Files</button>
-                    <button class="tab-btn" data-tab="history">📜 History</button>
+                    <button class="tab-btn active" data-tab="history">💬 History</button>
                     <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
                 </div>
 
-                <!-- File Browser -->
-                <div id="files-tab" class="tab-content active">
-                    <div class="file-browser">
-                        <div class="breadcrumb">
-                            <span id="current-path">/home</span>
-                        </div>
-                        <div id="file-list" class="file-list">
-                            <div class="placeholder">File browser coming soon</div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Session History -->
-                <div id="history-tab" class="tab-content">
+                <div id="history-tab" class="tab-content active">
                     <div class="history-container">
-                        <button id="clear-history-btn" class="btn-small">Clear History</button>
+                        <button id="new-session-btn" class="btn-small">+ New Chat</button>
                         <div id="history-list" class="history-list"></div>
                     </div>
                 </div>
@@ -98,32 +111,22 @@
                             </label>
                         </div>
                         <div class="setting">
-                            <label for="history-limit">Keep Last:</label>
+                            <label for="history-limit">Keep last:</label>
                             <input type="number" id="history-limit" min="1" max="100" value="50">
                             messages
+                        </div>
+                        <hr style="border-color: var(--border); margin: 0.5rem 0;">
+                        <div class="setting">
+                            <label for="password-input">Change Password</label>
+                            <input type="password" id="password-input" placeholder="New password"
+                                   autocomplete="new-password">
+                            <button id="password-btn" class="btn-small">Update</button>
                         </div>
                         <button id="reset-btn" class="btn-small danger">Reset Settings</button>
                     </div>
                 </div>
             </aside>
         </main>
-    </div>
-
-    <!-- Settings Modal -->
-    <div id="settings-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>Settings</h2>
-                <button class="btn-close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label for="password-input">Change Password:</label>
-                    <input type="password" id="password-input" placeholder="Leave empty to skip">
-                    <button id="password-btn" class="btn-small">Update Password</button>
-                </div>
-            </div>
-        </div>
     </div>
 
     <script src="/marked.min.js"></script>

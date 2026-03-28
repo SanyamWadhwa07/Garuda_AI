@@ -8,6 +8,15 @@ from pathlib import Path
 from typing import Optional
 import ssl
 
+# On Windows the default console encoding is cp1252 which can't print ✓ ✗ etc.
+# Reconfigure stdout/stderr to UTF-8 so Unicode output works everywhere.
+if sys.platform == "win32":
+    import io
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 _is_windows = sys.platform == "win32"
 
 import click

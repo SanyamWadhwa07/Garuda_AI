@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -X utf8 -m src detect)",
+      "Bash(python -X utf8 -c \":*)",
+      "Bash(python -m src suggest)",
+      "Bash(python -m src status)",
+      "Bash(echo $PATH)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Read(//c/Users/ASUS/AppData/Roaming/Python/Python313/Scripts//**)",
+      "Bash(python -m site --user-site)",
+      "Bash(python -m site --user-base)",
+      "Bash(powershell -Command \":*)",
+      "Bash(export PATH=\"$PATH:/c/Users/ASUS/AppData/Roaming/Python/Python313/Scripts\")",
+      "Bash(garudaai detect:*)",
+      "Bash(garudaai setup:*)",
+      "Bash(powershell -Command \"netsh advfirewall firewall add rule name=''GarudaAI Port 8000'' dir=in action=allow protocol=TCP localport=8000\")",
+      "Bash(powershell -Command \"netsh advfirewall firewall show rule name=''''GarudaAI Port 8000''''\")",
+      "Bash(powershell -Command \"Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias,IPAddress | Format-Table -AutoSize\")",
+      "Bash(netstat -ano)",
+      "Read(//d/GarudaAI/**)",
+      "Bash(curl -sk https://localhost:8000/api/health)",
+      "Bash(curl -sk https://localhost:8000/api/models)",
+      "Bash(python -X utf8 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(''''Models:'''', d\\)\")",
+      "Bash(curl -sk -o /dev/null -w \"%{http_code}\" https://localhost:8000/)",
+      "Bash(python -m pip install -e . -q)",
+      "Bash(garudaai --help)",
+      "Bash(bash -n d:/GarudaAI/install.sh)"
+    ]
+  }
+}
